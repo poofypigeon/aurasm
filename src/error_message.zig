@@ -14,6 +14,9 @@ const red = csi ++ "31m";
 const green = csi ++ "32m";
 const reset = csi ++ "0m";
 
+/// Output an error message to stderr.
+/// The error message includes a premable including the file path, row and
+/// column where the most recently scanned token is located.
 pub fn printError(comptime fmt: []const u8, args: anytype) !void {
     var buffer = std.io.bufferedWriter(stderr.writer());
     var writer = buffer.writer();

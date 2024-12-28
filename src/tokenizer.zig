@@ -12,8 +12,6 @@ pub const Tokenizer = struct {
     tokenEnd: u32,
     again: bool,
 
-    const TokenizerError = error{EndOfTokens};
-
     pub fn init(line: [:0]const u8) Tokenizer {
         return Tokenizer{
             .line = line,
@@ -25,22 +23,25 @@ pub const Tokenizer = struct {
 
     /// Returns next token in slice.
     /// If there are no more tokens to be read, returns error.EndOfLine
-    pub fn next(self: *Tokenizer) ![]const u8 {
+    pub fn next(self: *Tokenizer) ?[]const u8 {
         if (self.again) {
             self.again = false;
             return self.line[self.tokenStart..self.tokenEnd];
         }
 
-        if (self.tokenEnd == self.line.len) return error.EndOfTokens;
+        if (self.tokenEnd == self.line.len) {
+            self.tokenStart = self.tokenEnd;
+            return null;
+        }
 
         // Skip whitespace
         while (ascii.isWhitespace(self.line[self.tokenEnd])) : (self.tokenEnd += 1) {}
         self.tokenStart = self.tokenEnd;
         globals.columnNumber = self.tokenEnd;
-        if (self.tokenStart == self.line.len) return error.EndOfTokens;
+        if (self.tokenStart == self.line.len) return null;
 
         // Treat comments as end-of-line
-        if (self.line[self.tokenStart] == ';') return error.EndOfTokens;
+        if (self.line[self.tokenStart] == ';') return null;
 
         // Any non-alphanumeric characters besides whitespace and underscores are considered tokens
         if (!isLabelChar(self.line[self.tokenEnd])) {

@@ -29,6 +29,7 @@ const FLAGS_DT_M: u32 = 1 << 10;
 const INSTR_MOVE_FROM_PSR: u32 = 0x0001_8000;
 
 const INSTR_SET_CLEAR_PSR_BITS: u32 = 0x2001_8000;
+const FLAGS_PSR_I: u32 = 1 << 28;
 const FLAGS_PSR_S: u32 = 1 << 17;
 
 const INSTR_DATA_PROCESSING: u32 = 0x4000_0000;
@@ -54,7 +55,7 @@ const COND_AL: u32 = 0b1110 << 17;
 const INSTR_MOVE_IMMEDIATE: u32 = 0xC000_0000;
 const FLAGS_MI_M: u32 = 1 << 28;
 
-const InstructionError = error{InvalidMnemonic};
+const INSTR_SOFTWARE_INTERRUPT: u32 = 0xF000_0000;
 
 // ================================================================
 //   INSTRUCTION PARSING
@@ -62,7 +63,7 @@ const InstructionError = error{InvalidMnemonic};
 
 pub fn encodeInstruction(line: [:0]const u8) !?Instruction {
     var tokenizer = Tokenizer.init(line);
-    const token = tokenizer.next() catch return null;
+    const token = tokenizer.next() orelse return null;
 
     // Line is only a comment
     if (token[0] == ';') return null;
@@ -80,9 +81,9 @@ pub fn encodeInstruction(line: [:0]const u8) !?Instruction {
         perf.STSB => try encodeDataTransfer(&tokenizer, FLAGS_DT_S | FLAGS_DT_B | FLAGS_DT_M),
         perf.STH => try encodeDataTransfer(&tokenizer, FLAGS_DT_S | FLAGS_DT_H),
         perf.STSH => try encodeDataTransfer(&tokenizer, FLAGS_DT_S | FLAGS_DT_H | FLAGS_DT_M),
-        // perf.SMV => encodeMoveFromPsr(tokenizer),
-        // perf.SST => encodeSetClearPsrBits(tokenizer, FLAGS_PSR_S),
-        // perf.SCL => encodeSetClearPsrBits(tokenizer, 0),
+        perf.SMV => try encodeMoveFromPsr(&tokenizer),
+        perf.SST => encodeSetClearPsrBits(&tokenizer, FLAGS_PSR_S),
+        perf.SCL => encodeSetClearPsrBits(&tokenizer, 0),
         // perf.ADD => encodeDataProcessing(mnem, tokenizer, OPCODE_ADD),
         // perf.ADC => encodeDataProcessing(mnem, tokenizer, OPCODE_ADC),
         // perf.SUB => encodeDataProcessing(mnem, tokenizer, OPCODE_SUB),
@@ -142,11 +143,13 @@ pub fn encodeInstruction(line: [:0]const u8) !?Instruction {
         // perf.BLGT => encodeBranch(tokenizer, FLAGS_B_L | COND_GT),
         // perf.BLLE => encodeBranch(tokenizer, FLAGS_B_L | COND_LE),
         perf.MVI => try encodeMoveImmediate(&tokenizer),
-        // perf.SWI => encodeSoftwareInterrups(tokenizer),
-        // perf.MOV32 => encodeMoveWord(tokenizer),
-        else => error.InvalidMnemonic,
+        perf.SWI => try encodeSoftwareInterrupt(&tokenizer),
+        // perf.MOV32 =>  {
+        // encodeMoveWord(tokenizer),
+        // }
+        else => error.Unexpected,
     } catch |err| switch (err) {
-        error.InvalidMnemonic => {
+        error.Unexpected => {
             try errMsg.printError("expected mnemonic, found '{s}'\n", .{token});
             try errMsg.displayTokenInLine(&tokenizer);
             return err;
@@ -159,9 +162,6 @@ pub fn encodeInstruction(line: [:0]const u8) !?Instruction {
         try errMsg.printError("expected 'EOL', found '{s}'\n", .{tok});
         try errMsg.displayTokenInLine(&tokenizer);
         return error.Unexpected;
-    } else |err| switch (err) {
-        error.EndOfTokens => {},
-        else => return err,
     }
 
     return Instruction{
@@ -172,10 +172,16 @@ pub fn encodeInstruction(line: [:0]const u8) !?Instruction {
 
 const fmtErrExpected = "expected {s}, found '{s}'\n";
 
+/// Parse assembly lines beginning with LD, LDB, LSB, LDH, LDSH, ST, STB,
+/// STSB, STH, and STSH mnemonics
 fn encodeDataTransfer(tokenizer: *Tokenizer, flags: u32) !u32 {
+    const fmtErrOffsetNotEncodable = "offset value cannot be encoded\n";
+    const fmtErrShiftNotEncodable = "shift value cannot be encoded\n";
+
     var instr = INSTR_DATA_TRANSFER | flags;
 
     var postIncrement = false;
+    var offsetIsRegister = false;
 
     const rd = try expectRegister(tokenizer);
     instr |= @as(u32, @intCast(rd)) << 24;
@@ -190,22 +196,23 @@ fn encodeDataTransfer(tokenizer: *Tokenizer, flags: u32) !u32 {
         '+' => {},
         '-' => instr |= FLAGS_DT_N,
         ']' => {
-            if (optionalOperator("+-", tokenizer)) |res| {
-                if (res) |c| switch (c) {
-                    '+' => {
-                        postIncrement = true;
-                        instr |= FLAGS_DT_P;
-                    },
-                    '-' => {
-                        postIncrement = true;
-                        instr |= FLAGS_DT_P | FLAGS_DT_N;
-                    },
-                    else => unreachable,
-                };
-            } else |err| switch (err) {
+            if (optionalOperator("+-", tokenizer)) |c| switch (c) {
+                '+' => {
+                    postIncrement = true;
+                    instr |= FLAGS_DT_P;
+                },
+                '-' => {
+                    postIncrement = true;
+                    instr |= FLAGS_DT_P | FLAGS_DT_N;
+                },
+                else => unreachable,
+            } else {
                 // No offset, early return
-                error.EndOfTokens => return instr,
-                else => return err,
+                const token = tokenizer.next() orelse return instr;
+                // Extraneous token
+                try errMsg.printError(fmtErrExpected, .{ "'+', '-' or 'EOL'", token });
+                try errMsg.displayTokenInLine(tokenizer);
+                return error.Unexpected;
             }
         },
         else => unreachable,
@@ -213,7 +220,10 @@ fn encodeDataTransfer(tokenizer: *Tokenizer, flags: u32) !u32 {
 
     // Rn or #offset
     if (expectRegisterOrValue(tokenizer)) |op| switch (op) {
-        .REG => |reg| instr |= @as(u32, @intCast(reg)),
+        .REG => |reg| {
+            instr |= @as(u32, @intCast(reg));
+            offsetIsRegister = true;
+        },
         .IMM => |val| {
             // Immediate flag
             instr |= FLAGS_DT_I;
@@ -221,25 +231,26 @@ fn encodeDataTransfer(tokenizer: *Tokenizer, flags: u32) !u32 {
             if (val != 0) instr |= blk: {
                 // Must determine if the value is representable as a shifted 10-bit value
                 if (val <= 0x000003FF) break :blk val;
-                std.debug.print("here2\n", .{});
                 const leadingZeros = @clz(val);
                 const trailingZeros = @ctz(val);
                 const windowSize = 32 - leadingZeros - trailingZeros;
 
                 // All set bits must fit within in a 10-bit window
                 if (windowSize > 10) {
-                    // TODO error message
+                    try errMsg.printError(fmtErrOffsetNotEncodable, .{});
+                    try errMsg.displayTokenInLine(tokenizer);
                     return error.ValueNotEncodable;
                 }
 
                 // If the window is not left-aligned to 2-bits, then it may only be 9-bits wide
                 if (leadingZeros % 2 == 1 and windowSize == 10) {
-                    // TODO error message
+                    try errMsg.printError(fmtErrOffsetNotEncodable, .{});
+                    try errMsg.displayTokenInLine(tokenizer);
                     return error.ValueNotEncodable;
                 }
 
                 // The resulting encodable values
-                const shift: u32 = leadingZeros / 2;
+                const shift: u32 = trailingZeros / 2;
                 const imm = val >> @intCast(shift * 2);
 
                 break :blk shift << 11 | imm;
@@ -251,7 +262,8 @@ fn encodeDataTransfer(tokenizer: *Tokenizer, flags: u32) !u32 {
         else => unreachable,
     } else |err| switch (err) {
         error.ValueNotEncodable => {
-            // TODO error message
+            try errMsg.printError(fmtErrOffsetNotEncodable, .{});
+            try errMsg.displayTokenInLine(tokenizer);
             return err;
         },
         else => return err,
@@ -259,73 +271,113 @@ fn encodeDataTransfer(tokenizer: *Tokenizer, flags: u32) !u32 {
 
     // ']' and '!' if no shift value
     if (!postIncrement) {
-        const noShift = optionalOperator("]", tokenizer) catch |err| switch (err) {
-            error.EndOfTokens => {
-                try errMsg.printError(fmtErrExpected, .{ "'['", "EOL" });
+        if (optionalOperator("]", tokenizer)) |_| {
+            if (optionalOperator("!", tokenizer)) |_| {
+                instr |= FLAGS_DT_W;
+            }
+            return instr;
+        }
+    }
+
+    if (offsetIsRegister) {
+        // 'lsl'
+        var token = tokenizer.next() orelse {
+            // Early return if closing brace already seen
+            if (postIncrement) return instr;
+            // Otherwise missing closing brace
+            try errMsg.printError(fmtErrExpected, .{ "']' or 'lsl'", "EOL" });
+            try errMsg.displayTokenInLine(tokenizer);
+            return error.EndOfLine;
+        };
+
+        const mnem = perf.parseMnemonic(token.ptr, token.len);
+        switch (mnem) {
+            perf.LSL => {},
+            else => {
+                try errMsg.printError(fmtErrExpected, .{ "'']', 'lsl', or 'EOL'", token });
+                try errMsg.displayTokenInLine(tokenizer);
+                return error.Unexpected;
+            },
+        }
+
+        // Shift value
+        token = try nextTokenNoEol("value", tokenizer);
+        if (parseInteger(token)) |shift| {
+            // Must determine if shift value is multiple of two and less than 32
+            if ((shift & ~@as(u32, 0x0000_001E) != 0)) {
+                try errMsg.printError(fmtErrShiftNotEncodable, .{});
+                try errMsg.displayTokenInLine(tokenizer);
+                return error.ValueNotEncodable;
+            }
+            instr |= shift << 10;
+        } else |err| switch (err) {
+            error.ValueNotEncodable => {
+                try errMsg.printError(fmtErrShiftNotEncodable, .{});
+                try errMsg.displayTokenInLine(tokenizer);
+                return err;
+            },
+            error.Unexpected => {
+                try errMsg.printError(fmtErrExpected, .{ "value", token });
                 try errMsg.displayTokenInLine(tokenizer);
                 return err;
             },
             else => return err,
-        };
-        if (noShift) |_| {
-            if (optionalOperator("!", tokenizer)) |preIncrement| {
-                if (preIncrement) |_| return instr | FLAGS_DT_W;
-            } else |err| switch (err) {
-                error.EndOfTokens => {},
-                else => return err,
+        }
+    }
+
+    // Early return if closing brace already seen
+    if (postIncrement) return instr;
+
+    _ = try expectOperator("]", tokenizer);
+    _ = optionalOperator("!", tokenizer) orelse return instr;
+
+    return instr | FLAGS_DT_W;
+}
+
+/// Parse assembly lines beginning with SMV mnemonic
+fn encodeMoveFromPsr(tokenizer: *Tokenizer) !u32 {
+    const instr = INSTR_MOVE_FROM_PSR;
+
+    const rd = try expectRegister(tokenizer);
+    return instr | (@as(u32, @intCast(rd)) << 24);
+}
+
+/// Parse assembly lines beginning with SMV mnemonic
+fn encodeSetClearPsrBits(tokenizer: *Tokenizer, flags: u32) !u32 {
+    const fmtErrNotEncodable = "value cannot be encoded\n";
+
+    var instr = INSTR_SET_CLEAR_PSR_BITS | flags;
+
+    const rd = try expectRegister(tokenizer);
+    instr |= (@as(u32, @intCast(rd)) << 24);
+
+    // Rn or #offset
+    if (expectRegisterOrValue(tokenizer)) |op| switch (op) {
+        .REG => |reg| instr |= reg,
+        .IMM => |val| {
+            // Must determine if the value is representable in 10-bits
+            if (val > 0x0000_03FF) {
+                try errMsg.printError(fmtErrNotEncodable, .{});
+                try errMsg.displayTokenInLine(tokenizer);
+                return error.ValueNotEncodable;
             }
-        }
-    }
 
-    // 'lsl'
-    var token = tokenizer.next() catch |err| switch (err) {
-        // No shift on offset, early return
-        error.EndOfTokens => return instr,
-        else => return err,
-    };
-    const mnem = perf.parseMnemonic(token.ptr, token.len);
-    switch (mnem) {
-        perf.LSL => {},
-        else => {
-            try errMsg.printError(fmtErrExpected, .{ "'lsl'", token });
-            try errMsg.displayTokenInLine(tokenizer);
-            return error.Unexpected;
+            instr |= FLAGS_PSR_I | val;
         },
-    }
-
-    // Shift value
-    token = try nextTokenNoEol("value", tokenizer);
-    if (parseInteger(token)) |shift| {
-        // Must determine if shift value is multiple of two and less than 32
-        if ((shift & ~@as(u32, 0x0000_001E) != 0)) {
-            try errMsg.printError("shift value cannot be encoded\n", .{});
-            try errMsg.displayTokenInLine(tokenizer);
-            return error.ValueNotEncodable;
-        }
-        instr |= shift << 10;
-        return instr;
+        else => unreachable,
     } else |err| switch (err) {
         error.ValueNotEncodable => {
-            try errMsg.printError("shift value cannot be encoded\n", .{});
+            try errMsg.printError(fmtErrNotEncodable, .{});
             try errMsg.displayTokenInLine(tokenizer);
             return err;
         },
         else => return err,
     }
 
-    // Early return if closing brace already seen
-    if (postIncrement) return instr;
-
-    try expectOperator("]", tokenizer);
-    optionalOperator("!", tokenizer) catch |err| switch (err) {
-        // No pre-increment
-        error.EndOfTokens => return instr,
-        else => return err,
-    };
-
-    return instr | FLAGS_DT_W;
+    return instr;
 }
 
+/// Parse assembly lines beginning with MVI mnemonic
 fn encodeMoveImmediate(tokenizer: *Tokenizer) !u32 {
     const fmtErrNotEncodable = "value cannot be encoded by MVI, use MOV32 instead\n";
 
@@ -333,13 +385,13 @@ fn encodeMoveImmediate(tokenizer: *Tokenizer) !u32 {
 
     var negate = false;
 
-    const reg = try expectRegister(tokenizer);
-    instr |= @as(u32, @intCast(reg)) << 24;
+    const rd = try expectRegister(tokenizer);
+    instr |= @as(u32, @intCast(rd)) << 24;
 
     _ = try expectOperator(",", tokenizer);
 
     // Optional '-'
-    if (try optionalOperator("-", tokenizer)) |_| {
+    if (optionalOperator("-", tokenizer)) |_| {
         negate = true;
         instr |= FLAGS_MI_M;
     }
@@ -377,7 +429,7 @@ fn encodeMoveImmediate(tokenizer: *Tokenizer) !u32 {
             try errMsg.displayTokenInLine(tokenizer);
             return err;
         },
-        error.InvalidOperand => {
+        error.Unexpected => {
             try errMsg.printError(fmtErrExpected, .{ "value", token });
             if (negate) tokenizer.tokenStart -= 1; // underline '-' as well
             try errMsg.displayTokenInLine(tokenizer);
@@ -386,18 +438,47 @@ fn encodeMoveImmediate(tokenizer: *Tokenizer) !u32 {
     }
 }
 
-// ================================================================
-//   PARSING HELPER FUNCTIONS
-// ================================================================
+/// Parse assembly lines beginning with SWI mnemonic
+fn encodeSoftwareInterrupt(tokenizer: *Tokenizer) !u32 {
+    const instr = INSTR_SOFTWARE_INTERRUPT;
 
-inline fn nextTokenNoEol(comptime expect: []const u8, tokenizer: *Tokenizer) ![]const u8 {
-    return tokenizer.next() catch |err| switch (err) {
-        error.EndOfTokens => {
-            try errMsg.printError(fmtErrExpected, .{ expect, "EOL" });
+    const token = tokenizer.next() orelse return instr;
+    const comment = parseInteger(token) catch |err| switch (err) {
+        error.Unexpected => {
+            try errMsg.printError(fmtErrExpected, .{ "positive value", token });
+            try errMsg.displayTokenInLine(tokenizer);
+            return err;
+        },
+        error.ValueNotEncodable => {
+            try errMsg.printError("comment value cannot be encoded", .{});
             try errMsg.displayTokenInLine(tokenizer);
             return err;
         },
     };
+
+    if ((comment & ~@as(u32, 0x0FFF_FFFF)) != 0) {
+        try errMsg.printError("comment value cannot be encoded", .{});
+        try errMsg.displayTokenInLine(tokenizer);
+        return error.ValueNotEncodable;
+    }
+
+    return instr | comment;
+}
+
+// ================================================================
+//   PARSING HELPER FUNCTIONS
+// ================================================================
+
+const LineError = error{EndOfLine};
+
+inline fn nextTokenNoEol(comptime expect: []const u8, tokenizer: *Tokenizer) ![]const u8 {
+    if (tokenizer.next()) |token| {
+        return token;
+    } else {
+        try errMsg.printError(fmtErrExpected, .{ expect, "EOL" });
+        try errMsg.displayTokenInLine(tokenizer);
+        return error.EndOfLine;
+    }
 }
 
 inline fn expectRegister(tokenizer: *Tokenizer) !u4 {
@@ -410,7 +491,7 @@ inline fn expectRegister(tokenizer: *Tokenizer) !u4 {
             return error.Unexpected;
         },
     } else |err| switch (err) {
-        error.InvalidOperand => {
+        error.Unexpected => {
             try errMsg.printError(fmtErrExpected, .{ "register", token });
             try errMsg.displayTokenInLine(tokenizer);
             return err;
@@ -430,7 +511,7 @@ inline fn expectRegisterOrValue(tokenizer: *Tokenizer) !Operand {
             return error.Unexpected;
         },
     } else |err| switch (err) {
-        error.InvalidOperand => {
+        error.Unexpected => {
             try errMsg.printError(fmtErrExpected, .{ "register or value", token });
             try errMsg.displayTokenInLine(tokenizer);
             return err;
@@ -451,8 +532,8 @@ inline fn expectOperator(comptime expect: []const u8, tokenizer: *Tokenizer) !u8
     return error.Unexpected;
 }
 
-inline fn optionalOperator(comptime expect: []const u8, tokenizer: *Tokenizer) !?u8 {
-    const token = try tokenizer.next();
+inline fn optionalOperator(comptime expect: []const u8, tokenizer: *Tokenizer) ?u8 {
+    const token = tokenizer.next() orelse return null;
     inline for (expect) |c| if (token[0] == c) return c;
 
     tokenizer.putBack();
@@ -462,37 +543,37 @@ inline fn optionalOperator(comptime expect: []const u8, tokenizer: *Tokenizer) !
 const OperandTag = enum { REG, IMM, LABEL };
 const Operand = union(OperandTag) { REG: u4, IMM: u32, LABEL: []const u8 };
 
-const OperandError = error{ InvalidOperand, ValueNotEncodable };
+const OperandError = error{ Unexpected, ValueNotEncodable };
 
 fn parseOperand(token: []const u8) !Operand {
     switch (token[0]) {
         'r', 'R' => {
-            if (token.len > 3) return error.InvalidOperand;
+            if (token.len > 3) return error.Unexpected;
             const regNum = try parseDec(token[1..]);
-            if (regNum > 0b1111) return error.InvalidOperand;
+            if (regNum > 0b1111) return error.Unexpected;
             return Operand{ .REG = @intCast(regNum) };
         },
         's' => {
             if (token.len == 2 and token[1] == 'p') return Operand{ .REG = 0b1110 };
-            return error.InvalidOperand;
+            return error.Unexpected;
         },
         'S' => {
             if (token.len == 2 and token[1] == 'P') return Operand{ .REG = 0b1110 };
-            return error.InvalidOperand;
+            return error.Unexpected;
         },
         'l' => {
             if (token.len == 2 and token[1] == 'r') return Operand{ .REG = 0b1111 };
-            return error.InvalidOperand;
+            return error.Unexpected;
         },
         'L' => {
             if (token.len == 2 and token[1] == 'R') return Operand{ .REG = 0b1111 };
-            return error.InvalidOperand;
+            return error.Unexpected;
         },
         '0' => {
-            if (token.len < 3) return error.InvalidOperand;
+            if (token.len < 3) return error.Unexpected;
             if (token[1] == 'x') return Operand{ .IMM = try parseHex(token[2..]) };
             if (token[1] == 'b') return Operand{ .IMM = try parseBin(token[2..]) };
-            return error.InvalidOperand;
+            return error.Unexpected;
         },
         else => {
             if (ascii.isDigit(token[0])) return Operand{ .IMM = try parseDec(token) };
@@ -504,14 +585,14 @@ fn parseOperand(token: []const u8) !Operand {
 inline fn parseInteger(token: []const u8) !u32 {
     switch (token[0]) {
         '0' => {
-            if (token.len < 3) return error.InvalidOperand;
+            if (token.len < 3) return error.Unexpected;
             if (token[1] == 'x') return try parseHex(token[2..]);
             if (token[1] == 'b') return try parseBin(token[2..]);
-            return error.InvalidOperand;
+            return error.Unexpected;
         },
         else => {
             if (ascii.isDigit(token[0])) return try parseDec(token);
-            return error.InvalidOperand;
+            return error.Unexpected;
         },
     }
 }
@@ -529,7 +610,7 @@ inline fn parseDec(token: []const u8) !u32 {
 
 inline fn u8AsDec(c: u8) !u4 {
     if (c >= '0' and c <= '9') return @intCast(c - '0');
-    return error.InvalidOperand;
+    return error.Unexpected;
 }
 
 inline fn parseHex(token: []const u8) !u32 {
@@ -547,7 +628,7 @@ inline fn u8AsHex(c: u8) !u4 {
     if (c >= '0' and c <= '9') return @intCast(c - '0');
     if (c >= 'A' and c <= 'F') return @intCast(c - 'A' + 10);
     if (c >= 'a' and c <= 'f') return @intCast(c - 'a' + 10);
-    return error.InvalidOperand;
+    return error.Unexpected;
 }
 
 inline fn parseBin(token: []const u8) !u32 {
@@ -563,45 +644,131 @@ inline fn parseBin(token: []const u8) !u32 {
 
 inline fn u8AsBin(c: u8) !u1 {
     if (c == '0' or c == '1') return @intCast(c - '0');
-    return error.InvalidOperand;
+    return error.Unexpected;
 }
 
 // ================================================================
 //   TESTS
 // ================================================================
 
-const globals = @import("globals.zig");
-
-fn parseInstr(line: [:0]const u8) !void {
-    if (encodeInstruction(line)) |o| {
-        if (o) |instr| {
-            std.debug.print("{s}\n\tencoded value: {x:0>8}\n", .{ line, instr.encoded });
-        } else {
-            std.debug.print("empty line.\n", .{});
-        }
-    } else |err| switch (err) {
-        else => {},
-    }
+/// Unwraps Instruction returns from encodeInstruction into raw u32 encodings
+fn ENCODE(line: [:0]const u8) !u32 {
+    const instr = try encodeInstruction(line) orelse Instruction{ .encoded = 0, .relocationSymbol = null };
+    return instr.encoded;
 }
 
-test {
-    try globals.path.appendSlice("testing.s");
-    try parseInstr("    ld r3, [r1]");
-    try parseInstr("    ldb r3, [r1]");
-    try parseInstr("    ldsb r3, [r1]");
-    try parseInstr("    ldh r3, [r1]");
-    try parseInstr("    ldsh r3, [r1]");
-    try parseInstr("    LD r3, [r1]");
-    try parseInstr("    LDB r3, [r1]");
-    try parseInstr("    LDSB r3, [r1]");
-    try parseInstr("    LDH r3, [r1]");
-    try parseInstr("    LDSH r3, [r1]");
+test "Empty lines" {
+    try std.testing.expectEqual(null, try encodeInstruction(""));
+    try std.testing.expectEqual(null, try encodeInstruction("; some comment"));
+}
 
-    try parseInstr("    ld r3, [r1 + 4]");
-    try parseInstr("    ld r3, [r1 + 4] lsl 8");
-    try parseInstr("    ld r3, [r1 + 4 lsl 8]");
+test "Invalid mnemonic" {
+    try std.testing.expectError(error.Unexpected, encodeInstruction("    bad"));
+}
 
-    // try parseInstr("    ld r3 [r1]");
-    // try parseInstr("    ld r3, r1]");
-    // try parseInstr("    ld r3, []");
+// --- Data Transfer Instructions
+
+test "Data Transfer -- Unexpected EOL" {
+    try std.testing.expectError(error.EndOfLine, encodeInstruction("    ld"));
+    try std.testing.expectError(error.EndOfLine, encodeInstruction("    ld r1"));
+    try std.testing.expectError(error.EndOfLine, encodeInstruction("    ld r1,"));
+    try std.testing.expectError(error.EndOfLine, encodeInstruction("    ld r1, ["));
+    try std.testing.expectError(error.EndOfLine, encodeInstruction("    ld r1, [r2"));
+    try std.testing.expectError(error.EndOfLine, encodeInstruction("    ld r1, [r2 +"));
+    try std.testing.expectError(error.EndOfLine, encodeInstruction("    ld r1, [r2 -"));
+    try std.testing.expectError(error.EndOfLine, encodeInstruction("    ld r1, [r2 + 4"));
+    try std.testing.expectError(error.EndOfLine, encodeInstruction("    ld r1, [r2 + r3"));
+    try std.testing.expectError(error.EndOfLine, encodeInstruction("    ld r1, [r2 + r3 lsl"));
+    try std.testing.expectError(error.EndOfLine, encodeInstruction("    ld r1, [r2 + r3 lsl 4"));
+    try std.testing.expectError(error.EndOfLine, encodeInstruction("    ld r1, [r2] +"));
+    try std.testing.expectError(error.EndOfLine, encodeInstruction("    ld r1, [r2] -"));
+    try std.testing.expectError(error.EndOfLine, encodeInstruction("    ld r1, [r2] + r3 lsl"));
+}
+
+test "Data Transfer -- Unexpected token" {
+    try std.testing.expectError(error.Unexpected, encodeInstruction("    ld!"));
+    try std.testing.expectError(error.Unexpected, encodeInstruction("    ld r1!"));
+    try std.testing.expectError(error.Unexpected, encodeInstruction("    ld r1,!"));
+    try std.testing.expectError(error.Unexpected, encodeInstruction("    ld r1, [!"));
+    try std.testing.expectError(error.Unexpected, encodeInstruction("    ld r1, [r2!"));
+    try std.testing.expectError(error.Unexpected, encodeInstruction("    ld r1, [r2 +!"));
+    try std.testing.expectError(error.Unexpected, encodeInstruction("    ld r1, [r2 -!"));
+    try std.testing.expectError(error.Unexpected, encodeInstruction("    ld r1, [r2 + 4!"));
+    try std.testing.expectError(error.Unexpected, encodeInstruction("    ld r1, [r2 + 4 lsl"));
+    try std.testing.expectError(error.Unexpected, encodeInstruction("    ld r1, [r2 + r3!"));
+    try std.testing.expectError(error.Unexpected, encodeInstruction("    ld r1, [r2 + r3 lsl!"));
+    try std.testing.expectError(error.Unexpected, encodeInstruction("    ld r1, [r2 + r3 lsl 4!"));
+    try std.testing.expectError(error.Unexpected, encodeInstruction("    ld r1, [r2] +!"));
+    try std.testing.expectError(error.Unexpected, encodeInstruction("    ld r1, [r2] -!"));
+    try std.testing.expectError(error.Unexpected, encodeInstruction("    ld r1, [r2] + r3 lsl!"));
+    try std.testing.expectError(error.Unexpected, encodeInstruction("    ld r1, [r2] + 4 lsl"));
+    try std.testing.expectError(error.Unexpected, encodeInstruction("    ld r1, [r2]!"));
+}
+
+test "Data Transfer -- Unencodable #offset" {
+    try std.testing.expectError(error.ValueNotEncodable, encodeInstruction("    ld r1, [r2 + 0b1111_1111_111]"));
+    try std.testing.expectError(error.ValueNotEncodable, encodeInstruction("    ld r1, [r2] + 0b1111_1111_111"));
+    try std.testing.expectError(error.ValueNotEncodable, encodeInstruction("    ld r1, [r2 + 0b1111_1111_110]"));
+    try std.testing.expectError(error.ValueNotEncodable, encodeInstruction("    ld r1, [r2] + 0b1111_1111_110"));
+}
+
+test "Data Transfer -- Unencodable #shift" {
+    try std.testing.expectError(error.ValueNotEncodable, encodeInstruction("    ld r1, [r2 + r3 lsl 1]"));
+    try std.testing.expectError(error.ValueNotEncodable, encodeInstruction("    ld r1, [r2 + r3 lsl 32]"));
+}
+
+test "Data transfer -- Mnemonic variants" {
+    try std.testing.expectEqual(0x0120_0000, try ENCODE("    ld    r1, [r2]"));
+    try std.testing.expectEqual(0x0120_8000, try ENCODE("    ldb   r1, [r2]"));
+    try std.testing.expectEqual(0x0120_8400, try ENCODE("    ldsb  r1, [r2]"));
+    try std.testing.expectEqual(0x0121_0000, try ENCODE("    ldh   r1, [r2]"));
+    try std.testing.expectEqual(0x0121_0400, try ENCODE("    ldsh  r1, [r2]"));
+    try std.testing.expectEqual(0x2120_0000, try ENCODE("    st    r1, [r2]"));
+    try std.testing.expectEqual(0x2120_8000, try ENCODE("    stb   r1, [r2]"));
+    try std.testing.expectEqual(0x2120_8400, try ENCODE("    stsb  r1, [r2]"));
+    try std.testing.expectEqual(0x2121_0000, try ENCODE("    sth   r1, [r2]"));
+    try std.testing.expectEqual(0x2121_0400, try ENCODE("    stsh  r1, [r2]"));
+}
+
+test "Data transfer -- no writeback register offset" {
+    try std.testing.expectEqual(0x0120_0003, try ENCODE("    ld    r1, [r2 + r3]"));
+    try std.testing.expectEqual(0x0124_0003, try ENCODE("    ld    r1, [r2 - r3]"));
+    try std.testing.expectEqual(0x0120_1003, try ENCODE("    ld    r1, [r2 + r3 lsl 4]"));
+    try std.testing.expectEqual(0x0124_1003, try ENCODE("    ld    r1, [r2 - r3 lsl 4]"));
+}
+
+test "Data transfer -- no writeback immediate" {
+    try std.testing.expectEqual(0x1120_02AA, try ENCODE("    ld    r1, [r2 + 0x02AA]"));
+    try std.testing.expectEqual(0x1124_02AA, try ENCODE("    ld    r1, [r2 - 0x02AA]"));
+}
+
+test "Data transfer -- pre-increment register offset" {
+    try std.testing.expectEqual(0x0122_0003, try ENCODE("    ld    r1, [r2 + r3]!"));
+    try std.testing.expectEqual(0x0126_0003, try ENCODE("    ld    r1, [r2 - r3]!"));
+    try std.testing.expectEqual(0x0122_1003, try ENCODE("    ld    r1, [r2 + r3 lsl 4]!"));
+    try std.testing.expectEqual(0x0126_1003, try ENCODE("    ld    r1, [r2 - r3 lsl 4]!"));
+}
+
+test "Data transfer -- pre-increment writeback immediate" {
+    try std.testing.expectEqual(0x1122_02AA, try ENCODE("    ld    r1, [r2 + 0x02AA]!"));
+    try std.testing.expectEqual(0x1126_02AA, try ENCODE("    ld    r1, [r2 - 0x02AA]!"));
+}
+
+test "Data transfer -- post-increment register offset" {
+    try std.testing.expectEqual(0x0128_0003, try ENCODE("    ld    r1, [r2] + r3"));
+    try std.testing.expectEqual(0x012C_0003, try ENCODE("    ld    r1, [r2] - r3"));
+    try std.testing.expectEqual(0x0128_1003, try ENCODE("    ld    r1, [r2] + r3 lsl 4"));
+    try std.testing.expectEqual(0x012C_1003, try ENCODE("    ld    r1, [r2] - r3 lsl 4"));
+}
+
+test "Data transfer -- post-increment writeback immediate" {
+    try std.testing.expectEqual(0x1128_02AA, try ENCODE("    ld    r1, [r2] + 0x02AA"));
+    try std.testing.expectEqual(0x112C_02AA, try ENCODE("    ld    r1, [r2] - 0x02AA"));
+}
+
+test "Data transfer -- implicitly shifted immediate" {
+    try std.testing.expectEqual(0x1120_12AA, try ENCODE("    ld    r1, [r2 + 0x2AA0]"));
+    try std.testing.expectEqual(0x1120_2851, try ENCODE("    ld    r1, [r2 + 0x14400]"));
+    try std.testing.expectEqual(0x1120_1992, try ENCODE("    ld    r1, [r2 + 0x6480]"));
+    try std.testing.expectEqual(0x1120_2341, try ENCODE("    ld    r1, [r2 + 0x34100]"));
 }
