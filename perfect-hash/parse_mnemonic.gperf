@@ -1,0 +1,178 @@
+%{
+#include "stddef.h"
+#include "string.h"
+
+enum Mnemonic {
+    INVALID,
+    LD, LDB, LDSB, LDH, LDSH,
+    ST, STB, STSB, STH, STSH,
+    SMV, SST, SCL,
+    ADD, ADC, SUB, SBC, AND, OR, XOR, BTC, NOT,
+    ADDX, ADCX, SUBX, SBCX, ANDX, ORX, XORX, BTCX, NOTX,
+    LSL, LSR, ASR, LSLX,
+    TST, TEQ, CMP, CPN,
+    B, BEQ, BNE, BCS, BCC, BMI, BPL, BVS, BVC, BHI, BLS, BGE, BLT, BGT, BLE,
+    BL, BLEQ, BLNE, BLCS, BLCC, BLMI, BLPL, BLVS, BLVC, BLHI, BLLS, BLGE, BLLT, BLGT, BLLE,
+    MVI, SWI,
+    MOV, MOV32,
+    NOP,
+};
+
+
+%}
+struct mnemonic_token {
+    char* name;
+    enum Mnemonic mnemonic;
+};
+%%
+ld,    LD
+ldb,   LDB
+ldsb,  LDSB
+ldh,   LDH
+ldsh,  LDSH
+st,    ST
+stb,   STB
+stsb,  STSB
+sth,   STH
+stsh,  STSH
+smv,   SMV
+sst,   SST
+scl,   SCL
+add,   ADD
+adc,   ADC
+sub,   SUB
+sbc,   SBC
+and,   AND
+or,    OR
+xor,   XOR
+btc,   BTC
+addx,  ADDX
+adcx,  ADCX
+subx,  SUBX
+sbcx,  SBCX
+andx,  ANDX
+orx,   ORX
+xorx,  XORX
+btcx,  BTCX
+b,     B
+beq,   BEQ
+bne,   BNE
+bcs,   BCS
+bcc,   BCC
+bmi,   BMI
+bpl,   BPL
+bvs,   BVS
+bvc,   BVC
+bhi,   BHI
+bls,   BLS
+bge,   BGE
+blt,   BLT
+bgt,   BGT
+ble,   BLE
+bl,    BL
+bleq,  BLEQ
+blne,  BLNE
+blcs,  BLCS
+blcc,  BLCC
+blmi,  BLMI
+blpl,  BLPL
+blvs,  BLVS
+blvc,  BLVC
+blhi,  BLHI
+blls,  BLLS
+blge,  BLGE
+bllt,  BLLT
+blgt,  BLGT
+blle,  BLLE
+mvi,   MVI
+swi,   SWI
+lsl,   LSL
+lsr,   LSR
+asr,   ASR
+lslx,  LSLX
+tst,   TST
+teq,   TEQ
+cmp,   CMP
+cpn,   CPN
+not,   NOT
+mov,   MOV
+mov32, MOV32
+nop,   NOP
+LD,    LD
+LDB,   LDB
+LDSB,  LDSB
+LDH,   LDH
+LDSH,  LDSH
+ST,    ST
+STB,   STB
+STSB,  STSB
+STH,   STH
+STSH,  STSH
+SMV,   SMV
+SST,   SST
+SCL,   SCL
+ADD,   ADD
+ADC,   ADC
+SUB,   SUB
+SBC,   SBC
+AND,   AND
+OR,    OR
+XOR,   XOR
+BTC,   BTC
+ADDX,  ADDX
+ADCX,  ADCX
+SUBX,  SUBX
+SBCX,  SBCX
+ANDX,  ANDX
+ORX,   ORX
+XORX,  XORX
+BTCX,  BTCX
+B,     B
+BEQ,   BEQ
+BNE,   BNE
+BCS,   BCS
+BCC,   BCC
+BMI,   BMI
+BPL,   BPL
+BVS,   BVS
+BVC,   BVC
+BHI,   BHI
+BLS,   BLS
+BGE,   BGE
+BLT,   BLT
+BGT,   BGT
+BLE,   BLE
+BL,    BL
+BLEQ,  BLEQ
+BLNE,  BLNE
+BLCS,  BLCS
+BLCC,  BLCC
+BLMI,  BLMI
+BLPL,  BLPL
+BLVS,  BLVS
+BLVC,  BLVC
+BLHI,  BLHI
+BLLS,  BLLS
+BLGE,  BLGE
+BLLT,  BLLT
+BLGT,  BLGT
+BLLE,  BLLE
+MVI,   MVI
+SWI,   SWI
+LSL,   LSL
+LSR,   LSR
+ASR,   ASR
+LSLX,  LSLX
+TST,   TST
+TEQ,   TEQ
+CMP,   CMP
+CPN,   CPN
+NOT,   NOT
+MOV,   MOV
+MOV32, MOV32
+NOP,   NOP
+%%
+enum Mnemonic parseMnemonic(register const char* str, register size_t len) {
+    struct mnemonic_token * res = in_word_set(str, len);
+    return (res) ? res->mnemonic : INVALID;
+}

@@ -1,0 +1,117 @@
+const std = @import("std");
+const mem = std.mem;
+const Allocator = mem.Allocator;
+const ascii = std.ascii;
+const toLower = ascii.toLower;
+
+const AsmSectionType = enum { BSS, DATA, RODATA, TEXT };
+
+const labelError = error{DuplicateLabel};
+
+const RelocationType = enum {
+    /// used for MOV32 pseudo-instructions
+    ABSOLUTE,
+    /// used for B and BL instructions
+    RELATIVE,
+};
+const AsmSection = struct {
+    section: AsmSectionType,
+    symbols: std.ArrayList(std.ArrayList(u8)),
+    labels: std.ArrayList(AsmLabel),
+    relocationEntries: std.ArrayList(RelocationEntry),
+    offset: u32,
+    buffer: std.ArrayList(u8),
+    allocator: Allocator,
+
+    const AsmLabel = struct {
+        /// index into AsmSection.symbols
+        symbol: u32,
+        /// offset into AsmSection.buffer refered to by the label
+        offset: u32,
+        exported: bool,
+    };
+
+    const RelocationEntry = struct {
+        type: RelocationType,
+        /// index into AsmSection.symbols
+        symbol: u32,
+        instrOffset: u32,
+    };
+
+    pub fn init(allocator: Allocator, section: AsmSectionType) AsmSection {
+        return AsmSection{
+            .section = section,
+            .labels = std.ArrayList(AsmLabel).init(allocator),
+            .relocationEntries = std.ArrayList(RelocationEntry).init(allocator),
+            .offset = 0,
+            .buffer = std.ArrayList(u8).init(allocator),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *AsmSection) void {
+        for (self.labels.items) |label| label.id.deinit();
+        self.labels.deinit();
+        self.buffer.deinit();
+    }
+
+    pub fn addLabel(self: *AsmSection, id: []const u8, exported: bool) !void {
+        for (self.labels.items) |label| {
+            if (std.mem.eql(u8, label.id.items, id)) return error.DuplicateLabel;
+        }
+
+        var label = AsmLabel{
+            .id = try std.ArrayList(u8).initCapacity(self.allocator, id.len),
+            .offset = self.offset,
+            .exported = exported,
+        };
+
+        try label.id.appendSlice(id);
+        try self.labels.append(label);
+    }
+};
+
+const Instruction = struct {
+    encoded: u32,
+    relocationSymbol: ?[]u8,
+};
+
+const AsmLineContentTag = enum {
+    SECTION,
+    EXPORT,
+    LABEL,
+    INSTRUCTION,
+    BYTE,
+    HWORD,
+    WORD,
+    ASCII,
+    ALIGN,
+};
+const AsmLineContent = union(AsmLineContentTag) {
+    SECTION: AsmSectionType,
+    EXPORT: void,
+    LABEL: []u8,
+    INSTRUCTION: Instruction,
+    BYTE: u8,
+    HWORD: u16,
+    WORD: u32,
+    ASCII: []u8,
+    ALIGN: u32,
+};
+
+pub fn parseLine(line: [:0]const u8, symbols: std.ArrayList(std.ArrayList(u8))) !?AsmLineContent {
+    if (line.len == 0) return null;
+
+    if (ascii.isWhitespace(line[0])) {
+        var i: u32 = 1;
+        while (i < line.len and ascii.isWhitespace(line[i])) : (i+=1) {}
+        if (i == line.len or line[i] == ';') return null;
+        return try parseInstruction(line[i..], symbols);
+    }
+
+    if (line[0] == '.') return try parseDirective(line, symbols);
+
+    return try parseLabel(line);
+}
+
+fn tokenize
