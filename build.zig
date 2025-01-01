@@ -10,7 +10,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    exe.addIncludePath(b.path("perfect-hash"));
+    exe.addIncludePath(b.path("gperf"));
 
     b.installArtifact(exe);
 
@@ -33,7 +33,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    exe_tests.addIncludePath(b.path("perfect-hash"));
+    exe_tests.addIncludePath(b.path("gperf"));
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&exe_tests.step);

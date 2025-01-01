@@ -1,5 +1,5 @@
 /* ANSI-C code produced by gperf version 3.1 */
-/* Command-line: gperf -tc7 --output-file=../c-src/parse_mnemonic.c parse_mnemonic.gperf  */
+/* Command-line: gperf -tc7 --output-file=parse_mnemonic.c parse_mnemonic.gperf  */
 /* Computed positions: -k'1-4' */
 
 #if !((' ' == 32) && ('!' == 33) && ('"' == 34) && ('#' == 35) \
@@ -43,8 +43,8 @@ enum Mnemonic {
     ADDX, ADCX, SUBX, SBCX, ANDX, ORX, XORX, BTCX, NOTX,
     LSL, LSR, ASR, LSLX,
     TST, TEQ, CMP, CPN,
-    B, BEQ, BNE, BCS, BCC, BMI, BPL, BVS, BVC, BHI, BLS, BGE, BLT, BGT, BLE,
-    BL, BLEQ, BLNE, BLCS, BLCC, BLMI, BLPL, BLVS, BLVC, BLHI, BLLS, BLGE, BLLT, BLGT, BLLE,
+    BEQ, BNE, BCS, BCC, BMI, BPL, BVS, BVC, BHI, BLS, BGE, BLT, BGT, BLE, B,
+    BLEQ, BLNE, BLCS, BLCC, BLMI, BLPL, BLVS, BLVC, BLHI, BLLS, BLGE, BLLT, BLGT, BLLE, BL,
     MVI, SWI,
     MOV, MOV32,
     NOP,

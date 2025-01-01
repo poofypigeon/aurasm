@@ -6,13 +6,32 @@ const globals = @import("globals.zig");
 
 const Tokenizer = @import("tokenizer.zig").Tokenizer;
 
-const fmtExpected = "expected {s}, found '{s}'\n";
+// Error message is set and then error.ParseError is explicitly returned by encoder function
+// Top level recieves and prints error message using context from tokenizer
 
 const esc = "\x1B";
 const csi = esc ++ "[";
 const red = csi ++ "31m";
 const green = csi ++ "32m";
 const reset = csi ++ "0m";
+
+const ParseErrorEnum = error{ParseError};
+
+pub const ParseError = struct {
+    text: std.ArrayList(u8),
+
+    pub fn init(allocator: std.mem.Allocator) ParseError {
+        return ParseError{ .text = std.ArrayList(u8).init(allocator) };
+    }
+
+    pub inline fn msg(
+        errMsg: *ParseError,
+        comptime fmt: []const u8,
+        args: anytype,
+    ) !void {
+        try errMsg.text.writer().print(fmt, args);
+    }
+};
 
 /// Output an error message to stderr.
 /// The error message includes a premable including the file path, row and
@@ -24,7 +43,11 @@ pub fn printError(comptime fmt: []const u8, args: anytype) !void {
     // Error preamble
     try writer.print(
         "{s}:{d}:{d}: " ++ red ++ "error: " ++ reset,
-        .{ globals.path.items, globals.lineNumber + 1, globals.columnNumber + 1 },
+        .{
+            globals.path.items,
+            globals.lineNumber + 1,
+            globals.columnNumber + 1,
+        },
     );
 
     // Error message
@@ -51,20 +74,4 @@ pub fn displayTokenInLine(tokenizer: *Tokenizer) !void {
     try writer.print(reset ++ "\n", .{});
 
     try buffer.flush();
-}
-
-pub fn operatorListStr(comptime list: []const u8) []const u8 {
-    return comptime blk: {
-        var result: []const u8 = "";
-        if (list.len == 1) break :blk "'" ++ list ++ "'";
-        if (list.len == 2) break :blk "'" ++ .{list[0]} ++ "' or '" ++ .{list[1]} ++ "'";
-        for (0.., list) |i, c| {
-            if (i < list.len - 1) {
-                result = result ++ "'" ++ .{c} ++ "', ";
-            } else {
-                result = result ++ "or '" ++ .{c} ++ "'";
-            }
-        }
-        break :blk result;
-    };
 }
