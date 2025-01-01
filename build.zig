@@ -5,8 +5,8 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
-        .name = "auras",
-        .root_source_file = b.path("src/auras.zig"),
+        .name = "aurasm",
+        .root_source_file = b.path("src/aurasm.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -28,8 +28,8 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     const exe_tests = b.addExecutable(.{
-        .name = "auras",
-        .root_source_file = b.path("src/auras.zig"),
+        .name = "aurasm",
+        .root_source_file = b.path("src/aurasm.zig"),
         .target = target,
         .optimize = optimize,
     });
