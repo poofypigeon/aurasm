@@ -4,6 +4,7 @@ const ascii = std.ascii;
 const Tokenizer = @import("tokenizer.zig").Tokenizer;
 
 const ParseError = @import("error_message.zig").ParseError;
+const displayTokenInline = @import("error_message.zig").displayTokenInLine;
 // const raise = @import("error_message.zig").raise;
 
 const perf = @cImport(@cInclude("parse_mnemonic.c"));
@@ -11,7 +12,7 @@ const perf = @cImport(@cInclude("parse_mnemonic.c"));
 const Instruction = struct {
     encoding: u32,
     extension: ?u32 = null,
-    reloc: ?[]u8 = null,
+    reloc: ?[]const u8 = null,
 };
 
 // ================================================================
@@ -46,7 +47,7 @@ const SetClearPsrBits = packed struct(u32) {
     s: u1 = 0,
     _1: u10 = 0,
     i: u1 = 0,
-    _2: u3 = 0b100,
+    _2: u3 = 0b001,
 };
 
 const OP_ADD = 0b000;
@@ -92,7 +93,7 @@ const Branch = packed struct(u32) {
     cond: u4 = 0,
     i: u1 = 0,
     l: u1 = 0,
-    _0: 0b10,
+    _0: u2 = 0b10,
 };
 
 const MoveImmediate = packed struct(u32) {
@@ -130,35 +131,33 @@ pub fn encodeInstruction(line: *Tokenizer, err: *ParseError) !?Instruction {
         perf.STSB => try encodeDataTransfer(line, err, .{ .s = 1, .b = 1, .m = 1 }),
         perf.STH => try encodeDataTransfer(line, err, .{ .s = 1, .h = 1 }),
         perf.STSH => try encodeDataTransfer(line, err, .{ .s = 1, .h = 1, .m = 1 }),
-        perf.SMV => try encodeMoveFromPsr(line, err, .{}),
+        perf.SMV => try encodeMoveFromPsr(line, err),
         perf.SST => try encodeSetClearPsrBits(line, err, .{ .s = 1 }),
         perf.SCL => try encodeSetClearPsrBits(line, err, .{}),
-        perf.NOT => try encodeDataProcessing(mnem, line, err, .{ .op = OP_XOR }),
-        perf.NOTX => try encodeDataProcessing(mnem, line, err, .{ .op = OP_XOR, .a = 1 }),
-        perf.LSL => try encodeDataProcessing(mnem, line, err, .{ .op = OP_ADD }),
-        perf.LSR => try encodeDataProcessing(mnem, line, err, .{ .op = OP_ADD }),
-        perf.ASR => try encodeDataProcessing(mnem, line, err, .{ .op = OP_ADD }),
-        perf.LSLX => try encodeDataProcessing(mnem, line, err, .{ .op = OP_ADD, .a = 1 }),
+        perf.NOT => try encodeDataProcessing(mnem, line, err, .{ .op = OP_XOR, .i = 1, .operand2 = 0x3FF }),
+        perf.NOTX => try encodeDataProcessing(mnem, line, err, .{ .op = OP_XOR, .i = 1, .operand2 = 0x3FF, .a = 1 }),
+        perf.LSL => try encodeDataProcessing(mnem, line, err, .{ .op = OP_OR }),
+        perf.LSR => try encodeDataProcessing(mnem, line, err, .{ .op = OP_OR, .d = 1 }),
+        perf.ASR => try encodeDataProcessing(mnem, line, err, .{ .op = OP_OR, .a = 1, .d = 1 }),
+        perf.LSLX => try encodeDataProcessing(mnem, line, err, .{ .op = OP_OR, .a = 1 }),
         perf.TST => try encodeDataProcessing(mnem, line, err, .{ .op = OP_AND }),
         perf.TEQ => try encodeDataProcessing(mnem, line, err, .{ .op = OP_XOR }),
         perf.CMP => try encodeDataProcessing(mnem, line, err, .{ .op = OP_SUB }),
         perf.CPN => try encodeDataProcessing(mnem, line, err, .{ .op = OP_ADD }),
-        perf.MOV => try encodeDataProcessing(mnem, line, err, .{ .op = OP_ADD }),
+        perf.MOV => try encodeDataProcessing(mnem, line, err, .{ .op = OP_ADD, .a = 1 }),
         perf.NOP => try encodeDataProcessing(mnem, line, err, .{ .op = OP_ADD, .a = 1 }),
         perf.MVI => try encodeMoveImmediate(line, err),
         perf.SWI => try encodeSoftwareInterrupt(line, err),
         perf.MOV32 => try encodeMove32(line, err),
         else => blk: {
             if (mnem >= perf.ADD and mnem <= perf.BTC) {
-                break :blk try encodeDataProcessing(mnem, line, err, .{ .op = mnem - perf.ADD });
+                break :blk try encodeDataProcessing(mnem, line, err, .{ .op = @intCast(mnem - perf.ADD) });
             } else if (mnem >= perf.ADDX and mnem <= perf.BTCX) {
-                break :blk try encodeDataProcessing(mnem, line, err, .{ .op = mnem - perf.ADDX, .a = 1 });
+                break :blk try encodeDataProcessing(mnem, line, err, .{ .op = @intCast(mnem - perf.ADDX), .a = 1 });
             } else if (mnem >= perf.BEQ and mnem <= perf.B) {
-                break :blk try encodeBranch(mnem, line, err, .{
-                    .cond = mnem - perf.BEQ,
-                });
+                break :blk try encodeBranch(line, err, .{ .cond = @intCast(mnem - perf.BEQ) });
             } else if (mnem >= perf.BLEQ and mnem <= perf.BL) {
-                break :blk try encodeBranch(mnem, line, err, .{ .cond = mnem - perf.BEQ, .l = 1 });
+                break :blk try encodeBranch(line, err, .{ .cond = @intCast(mnem - perf.BLEQ), .l = 1 });
             }
             break :blk error.Unexpected;
         },
@@ -285,7 +284,7 @@ fn encodeDataTransfer(line: *Tokenizer, err: *ParseError, comptime flags: DataTr
         }
 
         // Shift value
-        token = line.next() catch {
+        token = line.next() orelse {
             try err.msg("expected register\n", .{});
             return error.ParseError;
         };
@@ -320,13 +319,11 @@ fn encodeDataTransfer(line: *Tokenizer, err: *ParseError, comptime flags: DataTr
 }
 
 fn encodeMoveFromPsr(line: *Tokenizer, err: *ParseError) !Instruction {
-    return Instruction{ .encoding = MoveFromPsr{ .rd = try expectRegister(line, err) } };
+    return Instruction{ .encoding = @bitCast(MoveFromPsr{ .rd = try expectRegister(line, err) }) };
 }
 
-fn encodeSetClearPsrBits(line: *Tokenizer, err: *ParseError) !Instruction {
-    var inst = SetClearPsrBits{};
-
-    inst.rd = try expectRegister(line, err);
+fn encodeSetClearPsrBits(line: *Tokenizer, err: *ParseError, flags: SetClearPsrBits) !Instruction {
+    var inst = flags;
 
     // Rn or offset value
     if (expectRegisterOrValue(line, err)) |op| switch (op) {
@@ -340,7 +337,7 @@ fn encodeSetClearPsrBits(line: *Tokenizer, err: *ParseError) !Instruction {
                 return error.ParseError;
             }
 
-            inst.operand = imm;
+            inst.operand = @intCast(imm);
         },
         else => unreachable,
     } else |e| switch (e) {
@@ -354,11 +351,11 @@ fn encodeSetClearPsrBits(line: *Tokenizer, err: *ParseError) !Instruction {
     return Instruction{ .encoding = @bitCast(inst) };
 }
 
-fn encodeDataProcessing(mnem: u32, line: *Tokenizer, err: *ParseError, comptime flags: DataProcessing) !Instruction {
+fn encodeDataProcessing(mnem: u32, line: *Tokenizer, err: *ParseError, flags: DataProcessing) !Instruction {
     var inst = flags;
 
     // NOP
-    if (mnem == perf.NOP) return Instruction{ .encoding = inst };
+    if (mnem == perf.NOP) return Instruction{ .encoding = @bitCast(inst) };
 
     // TST, TEQ, CMP, and CPN all hardcode Rd to R0 (default)
     if (!(mnem >= perf.TST and mnem <= perf.CPN)) {
@@ -366,20 +363,20 @@ fn encodeDataProcessing(mnem: u32, line: *Tokenizer, err: *ParseError, comptime 
         _ = try expectOperator(",", line, err);
     }
 
-    // LSL, LSR, ASR, and LSLX skip all next tokens until Rn or imm
-    if (!(mnem >= perf.LSL and mnem <= perf.LSLX)) {
+    // LSL, LSR, ASR, and LSLX do not take an Rm value, only Rn
+    if (mnem >= perf.LSL and mnem <= perf.LSLX) {
+        inst.operand2 = try expectRegister(line, err);
+        _ = try expectOperator(",", line, err);
+    } else {
         inst.rm = try expectRegister(line, err);
 
-        // NOT takes immediate value -1 and is done
-        if (mnem == perf.NOT or mnem == perf.NOTX) {
-            // Immediate values are sign extended to 32-bits
-            inst.operand2 = 0x3FF;
+        if (mnem == perf.MOV or mnem == perf.NOT or mnem == perf.NOTX) {
             return Instruction{ .encoding = @bitCast(inst) };
         }
 
-        const negated = if (try expectOperator(",", line, err)) |_| true else false;
+        _ = try expectOperator(",", line, err);
 
-        if (optionalOperator("-", line)) |_| inst.m = 1;
+        const negated = if (optionalOperator("-", line)) |_| true else false;
 
         // Rn or immediate value
         if (expectRegisterOrValue(line, err)) |op| switch (op) {
@@ -388,7 +385,7 @@ fn encodeDataProcessing(mnem: u32, line: *Tokenizer, err: *ParseError, comptime 
                     try err.msg("registers cannot be negated\n", .{});
                     return error.ParseError;
                 }
-                inst.operand = rn;
+                inst.operand2 = rn;
             },
             .IMM => |val| {
                 inst.i = 1;
@@ -402,7 +399,7 @@ fn encodeDataProcessing(mnem: u32, line: *Tokenizer, err: *ParseError, comptime 
                     return error.ParseError;
                 }
 
-                inst.operand = @intCast(imm & 0x3FF);
+                inst.operand2 = @intCast(imm & 0x3FF);
             },
             else => unreachable,
         } else |e| switch (e) {
@@ -419,22 +416,22 @@ fn encodeDataProcessing(mnem: u32, line: *Tokenizer, err: *ParseError, comptime 
             switch (shiftMnem) {
                 perf.LSL => {},
                 perf.LSR => {
-                    if (comptime flags.a == 1) {
-                        try err.msg("expected 'lsl' or 'EOL'\n", .{});
+                    if (flags.a == 1) {
+                        try err.msg("right shifts are not encodable for 'x' instruction variants\n", .{});
                         return error.ParseError;
                     }
                     inst.d = 1;
                 },
                 perf.ASR => {
-                    if (comptime flags.a == 1) {
-                        try err.msg("expected 'lsl' or 'EOL'\n", .{});
+                    if (flags.a == 1) {
+                        try err.msg("right shifts are not encodable for 'x' instruction variants\n", .{});
                         return error.ParseError;
                     }
                     inst.d = 1;
                     inst.a = 1;
                 },
                 else => {
-                    if (comptime flags.a == 1) {
+                    if (flags.a == 1) {
                         try err.msg("expected 'lsl' or 'EOL'\n", .{});
                     } else {
                         try err.msg("expected 'lsl', 'lsr', 'asr' or 'EOL'\n", .{});
@@ -474,20 +471,20 @@ fn encodeDataProcessing(mnem: u32, line: *Tokenizer, err: *ParseError, comptime 
     return Instruction{ .encoding = @bitCast(inst) };
 }
 
-fn encodeBranch(line: *Tokenizer, err: *ParseError, comptime flags: Branch) !Instruction {
+fn encodeBranch(line: *Tokenizer, err: *ParseError, flags: Branch) !Instruction {
     var inst = flags;
 
     // Register or label
-    const token = line.next() catch {
+    const token = line.next() orelse {
         try err.msg("expected register or label\n", .{});
         return error.ParseError;
     };
     if (parseOperand(token)) |op| switch (op) {
         .REG => |reg| {
             inst.offset = reg;
-            return Instruction{ .encoding = inst };
+            return Instruction{ .encoding = @bitCast(inst) };
         },
-        .LABEL => |label| return Instruction{ .encoding = inst, .reloc = label },
+        .LABEL => |label| return Instruction{ .encoding = @bitCast(inst), .reloc = label },
         else => {
             try err.msg("expected register or label\n", .{});
             return error.ParseError;
@@ -512,7 +509,7 @@ fn encodeMoveImmediate(line: *Tokenizer, err: *ParseError) !Instruction {
     if (optionalOperator("-", line)) |_| inst.m = 1;
 
     // Parse immediate value
-    const token = line.next() catch {
+    const token = line.next() orelse {
         try err.msg("expected register\n", .{});
         return error.ParseError;
     };
@@ -534,7 +531,7 @@ fn encodeMoveImmediate(line: *Tokenizer, err: *ParseError) !Instruction {
             return error.ParseError;
         }
 
-        inst.immediate = @intCast(imm);
+        inst.immediate = @truncate(imm);
         return Instruction{ .encoding = @bitCast(inst) };
     }
 
@@ -548,13 +545,13 @@ fn encodeMoveImmediate(line: *Tokenizer, err: *ParseError) !Instruction {
     }
 
     inst.immediate = @intCast(imm);
-    return @bitCast(inst);
+    return Instruction{ .encoding = @bitCast(inst) };
 }
 
-fn encodeSoftwareInterrupt(line: *Tokenizer, err: *ParseError) !u32 {
+fn encodeSoftwareInterrupt(line: *Tokenizer, err: *ParseError) !Instruction {
     var inst = SoftwareInterrupt{};
 
-    const token = line.next() orelse return @bitCast(inst);
+    const token = line.next() orelse return Instruction{ .encoding = @bitCast(inst) };
     const comment = parseInteger(token) catch |e| switch (e) {
         error.Unexpected => {
             try err.msg("expected value\n", .{});
@@ -571,8 +568,8 @@ fn encodeSoftwareInterrupt(line: *Tokenizer, err: *ParseError) !u32 {
         return error.ParseError;
     }
 
-    inst.comment = comment;
-    return inst;
+    inst.comment = @intCast(comment);
+    return Instruction{ .encoding = @bitCast(inst) };
 }
 
 fn encodeMove32(line: *Tokenizer, err: *ParseError) !Instruction {
@@ -580,25 +577,35 @@ fn encodeMove32(line: *Tokenizer, err: *ParseError) !Instruction {
     var mviInst = MoveImmediate{
         .rd = rd,
     };
-    var orInst = DataProcessing{
+    var addInst = DataProcessing{
+        .h = 1,
         .i = 1,
         .rd = rd,
         .shift = 24,
         .a = 1,
     };
 
+    _ = try expectOperator(",", line, err);
+
     // Immediate or label
-    const token = line.next() catch {
+    const token = line.next() orelse {
         try err.msg("label or value\n", .{});
         return error.ParseError;
     };
     if (parseOperand(token)) |op| switch (op) {
         .IMM => |imm| {
             mviInst.immediate = @truncate(imm);
-            orInst.operand2 = @intCast(imm >> 24);
-            return Instruction{ .encoding = mviInst, .extension = orInst };
+            addInst.operand2 = @intCast(imm >> 24);
+            return Instruction{
+                .encoding = @bitCast(mviInst),
+                .extension = @bitCast(addInst),
+            };
         },
-        .LABEL => |label| return Instruction{ .encoding = mviInst, .extension = orInst, .reloc = label },
+        .LABEL => |label| return Instruction{
+            .encoding = @bitCast(mviInst),
+            .extension = @bitCast(addInst),
+            .reloc = label,
+        },
         else => {
             try err.msg("expected label or value\n", .{});
             return error.ParseError;
@@ -617,7 +624,7 @@ fn encodeMove32(line: *Tokenizer, err: *ParseError) !Instruction {
 // ================================================================
 
 inline fn expectRegister(line: *Tokenizer, err: *ParseError) !u4 {
-    const token = line.next() catch {
+    const token = line.next() orelse {
         try err.msg("expected register\n", .{});
         return error.ParseError;
     };
@@ -636,7 +643,7 @@ inline fn expectRegister(line: *Tokenizer, err: *ParseError) !u4 {
 }
 
 inline fn expectRegisterOrValue(line: *Tokenizer, err: *ParseError) !Operand {
-    const token = line.next() catch {
+    const token = line.next() orelse {
         try err.msg("expected register or value\n", .{});
         return error.ParseError;
     };
@@ -680,8 +687,8 @@ inline fn expectOperator(
     // Operator list fomatted for error message
     const expectListString = comptime operatorListStr(expect);
 
-    const token = line.next() catch {
-        try err.msg("expected register\n", .{});
+    const token = line.next() orelse {
+        try err.msg("expected {s}\n", .{expectListString});
         return error.ParseError;
     };
     inline for (expect) |c| if (token[0] == c) return c;
@@ -711,22 +718,10 @@ fn parseOperand(token: []const u8) !Operand {
             if (regNum > 0b1111) return error.Unexpected;
             return Operand{ .REG = @intCast(regNum) };
         },
-        's' => {
-            if (token.len == 2 and token[1] == 'p') return Operand{ .REG = 0b1110 };
-            return error.Unexpected;
-        },
-        'S' => {
-            if (token.len == 2 and token[1] == 'P') return Operand{ .REG = 0b1110 };
-            return error.Unexpected;
-        },
-        'l' => {
-            if (token.len == 2 and token[1] == 'r') return Operand{ .REG = 0b1111 };
-            return error.Unexpected;
-        },
-        'L' => {
-            if (token.len == 2 and token[1] == 'R') return Operand{ .REG = 0b1111 };
-            return error.Unexpected;
-        },
+        's' => if (token.len == 2 and token[1] == 'p') return Operand{ .REG = 0b1110 },
+        'S' => if (token.len == 2 and token[1] == 'P') return Operand{ .REG = 0b1110 },
+        'l' => if (token.len == 2 and token[1] == 'r') return Operand{ .REG = 0b1111 },
+        'L' => if (token.len == 2 and token[1] == 'R') return Operand{ .REG = 0b1111 },
         '0' => {
             if (token.len < 3) return error.Unexpected;
             if (token[1] == 'x') return Operand{ .IMM = try parseHex(token[2..]) };
@@ -735,9 +730,10 @@ fn parseOperand(token: []const u8) !Operand {
         },
         else => {
             if (ascii.isDigit(token[0])) return Operand{ .IMM = try parseDec(token) };
-            return Operand{ .LABEL = token };
+            if (!(ascii.isAlphabetic(token[0]) or token[0] == '_')) return error.Unexpected;
         },
     }
+    return Operand{ .LABEL = token };
 }
 
 inline fn parseInteger(token: []const u8) !u32 {
@@ -809,6 +805,25 @@ inline fn u8AsBin(c: u8) !u1 {
 //   TESTS
 // ================================================================
 
+/// Unwraps Instruction returns from encodeInstruction
+fn INST(line: [:0]const u8) !Instruction {
+    const ta = std.testing.allocator;
+    var err = ParseError.init(ta);
+    defer err.text.deinit();
+    var tokens = Tokenizer.init(line);
+    if (encodeInstruction(&tokens, &err)) |res| {
+        return res orelse Instruction{ .encoding = 0, .reloc = null };
+    } else |e| switch (e) {
+        error.ParseError => {
+            std.debug.print("ERROR: {s}", .{err.text.items});
+            try displayTokenInline(tokens);
+
+            return e;
+        },
+        else => return e,
+    }
+}
+
 /// Unwraps Instruction returns from encodeInstruction into raw u32 encodings
 fn ENCODE(line: [:0]const u8) !u32 {
     const ta = std.testing.allocator;
@@ -816,11 +831,13 @@ fn ENCODE(line: [:0]const u8) !u32 {
     defer err.text.deinit();
     var tokens = Tokenizer.init(line);
     if (encodeInstruction(&tokens, &err)) |res| {
-        const inst = res orelse Instruction{ .encoded = 0, .relocationSymbol = null };
-        return inst.encoded;
+        const inst = res orelse Instruction{ .encoding = 0, .reloc = null };
+        return inst.encoding;
     } else |e| switch (e) {
         error.ParseError => {
-            // std.debug.print("ERROR: {s}\n", .{err.text.items});
+            std.debug.print("ERROR: {s}", .{err.text.items});
+            try displayTokenInline(tokens);
+
             return e;
         },
         else => return e,
@@ -848,119 +865,429 @@ test "Invalid mnemonic" {
 // --- Data Transfer Instructions
 
 test "DataTransfer -- Unexpected EOL" {
-    try std.testing.expectError(error.ParseError, ENCODE("    ld"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1,"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, ["));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2 +"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2 -"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2 + 4"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2 + r3"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2 + r3 lsl"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2 + r3 lsl 4"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2] +"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2] -"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2] + r3 lsl"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1,"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, ["));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2 +"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2 -"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2 + 4"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2 + r3"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2 + r3 lsl"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2 + r3 lsl 4"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2] +"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2] -"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2] + r3 lsl"));
 }
 
 test "DataTransfer -- Unexpected token" {
-    try std.testing.expectError(error.ParseError, ENCODE("    ld!"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1!"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1,!"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [!"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2!"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2 +!"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2 -!"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2 + 4!"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2 + 4 lsl"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2 + r3!"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2 + r3 lsl!"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2 + r3 lsl 4!"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2] +!"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2] -!"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2] + r3 lsl!"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2] + 4 lsl"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2]!"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld!"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1!"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1,!"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [!"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2!"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2 +!"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2 -!"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2 + 4!"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2 + 4 lsl"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2 + r3!"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2 + r3 lsl!"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2 + r3 lsl 4!"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2] +!"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2] -!"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2] + r3 lsl!"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2] + 4 lsl"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2]!"));
 }
 
 test "DataTransfer -- Unencodable offset value" {
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2 + 0b1111_1111_111]"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2] + 0b1111_1111_111"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2 + 0b1111_1111_110]"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2] + 0b1111_1111_110"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2 + 0b1111_1111_111]"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2] + 0b1111_1111_111"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2 + 0b1111_1111_110]"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2] + 0b1111_1111_110"));
 }
 
 test "DataTransfer -- Unencodable shift value" {
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2 + r3 lsl 1]"));
-    try std.testing.expectError(error.ParseError, ENCODE("    ld r1, [r2 + r3 lsl 32]"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2 + r3 lsl 1]"));
+    try std.testing.expectError(error.ParseError, ENCODE("ld r1, [r2 + r3 lsl 32]"));
 }
 
 test "DataTransfer -- Mnemonic variants" {
-    try std.testing.expectEqual(0x0120_0000, try ENCODE("    ld    r1, [r2]"));
-    try std.testing.expectEqual(0x0120_8000, try ENCODE("    ldb   r1, [r2]"));
-    try std.testing.expectEqual(0x0120_8400, try ENCODE("    ldsb  r1, [r2]"));
-    try std.testing.expectEqual(0x0121_0000, try ENCODE("    ldh   r1, [r2]"));
-    try std.testing.expectEqual(0x0121_0400, try ENCODE("    ldsh  r1, [r2]"));
-    try std.testing.expectEqual(0x2120_0000, try ENCODE("    st    r1, [r2]"));
-    try std.testing.expectEqual(0x2120_8000, try ENCODE("    stb   r1, [r2]"));
-    try std.testing.expectEqual(0x2120_8400, try ENCODE("    stsb  r1, [r2]"));
-    try std.testing.expectEqual(0x2121_0000, try ENCODE("    sth   r1, [r2]"));
-    try std.testing.expectEqual(0x2121_0400, try ENCODE("    stsh  r1, [r2]"));
+    try std.testing.expectEqual(0x0120_0000, try ENCODE("ld    r1, [r2]"));
+    try std.testing.expectEqual(0x0120_8000, try ENCODE("ldb   r1, [r2]"));
+    try std.testing.expectEqual(0x0120_8400, try ENCODE("ldsb  r1, [r2]"));
+    try std.testing.expectEqual(0x0121_0000, try ENCODE("ldh   r1, [r2]"));
+    try std.testing.expectEqual(0x0121_0400, try ENCODE("ldsh  r1, [r2]"));
+    try std.testing.expectEqual(0x2120_0000, try ENCODE("st    r1, [r2]"));
+    try std.testing.expectEqual(0x2120_8000, try ENCODE("stb   r1, [r2]"));
+    try std.testing.expectEqual(0x2120_8400, try ENCODE("stsb  r1, [r2]"));
+    try std.testing.expectEqual(0x2121_0000, try ENCODE("sth   r1, [r2]"));
+    try std.testing.expectEqual(0x2121_0400, try ENCODE("stsh  r1, [r2]"));
 }
 
 test "DataTransfer -- No writeback register offset" {
-    try std.testing.expectEqual(0x0120_0003, try ENCODE("    ld    r1, [r2 + r3]"));
-    try std.testing.expectEqual(0x0124_0003, try ENCODE("    ld    r1, [r2 - r3]"));
-    try std.testing.expectEqual(0x0120_1003, try ENCODE("    ld    r1, [r2 + r3 lsl 4]"));
-    try std.testing.expectEqual(0x0124_1003, try ENCODE("    ld    r1, [r2 - r3 lsl 4]"));
+    try std.testing.expectEqual(0x0120_0003, try ENCODE("ld r1, [r2 + r3]"));
+    try std.testing.expectEqual(0x0124_0003, try ENCODE("ld r1, [r2 - r3]"));
+    try std.testing.expectEqual(0x0120_1003, try ENCODE("ld r1, [r2 + r3 lsl 4]"));
+    try std.testing.expectEqual(0x0124_1003, try ENCODE("ld r1, [r2 - r3 lsl 4]"));
 }
 
 test "DataTransfer -- No writeback immediate" {
-    try std.testing.expectEqual(0x1120_02AA, try ENCODE("    ld    r1, [r2 + 0x02AA]"));
-    try std.testing.expectEqual(0x1124_02AA, try ENCODE("    ld    r1, [r2 - 0x02AA]"));
+    try std.testing.expectEqual(0x1120_02AA, try ENCODE("ld r1, [r2 + 0x02AA]"));
+    try std.testing.expectEqual(0x1124_02AA, try ENCODE("ld r1, [r2 - 0x02AA]"));
 }
 
 test "Datatransfer -- Pre-increment register offset" {
-    try std.testing.expectEqual(0x0122_0003, try ENCODE("    ld    r1, [r2 + r3]!"));
-    try std.testing.expectEqual(0x0126_0003, try ENCODE("    ld    r1, [r2 - r3]!"));
-    try std.testing.expectEqual(0x0122_1003, try ENCODE("    ld    r1, [r2 + r3 lsl 4]!"));
-    try std.testing.expectEqual(0x0126_1003, try ENCODE("    ld    r1, [r2 - r3 lsl 4]!"));
+    try std.testing.expectEqual(0x0122_0003, try ENCODE("ld r1, [r2 + r3]!"));
+    try std.testing.expectEqual(0x0126_0003, try ENCODE("ld r1, [r2 - r3]!"));
+    try std.testing.expectEqual(0x0122_1003, try ENCODE("ld r1, [r2 + r3 lsl 4]!"));
+    try std.testing.expectEqual(0x0126_1003, try ENCODE("ld r1, [r2 - r3 lsl 4]!"));
 }
 
 test "Datatransfer -- Pre-increment writeback immediate" {
-    try std.testing.expectEqual(0x1122_02AA, try ENCODE("    ld    r1, [r2 + 0x02AA]!"));
-    try std.testing.expectEqual(0x1126_02AA, try ENCODE("    ld    r1, [r2 - 0x02AA]!"));
+    try std.testing.expectEqual(0x1122_02AA, try ENCODE("ld r1, [r2 + 0x02AA]!"));
+    try std.testing.expectEqual(0x1126_02AA, try ENCODE("ld r1, [r2 - 0x02AA]!"));
 }
 
 test "Datatransfer -- Post-increment register offset" {
-    try std.testing.expectEqual(0x0128_0003, try ENCODE("    ld    r1, [r2] + r3"));
-    try std.testing.expectEqual(0x012C_0003, try ENCODE("    ld    r1, [r2] - r3"));
-    try std.testing.expectEqual(0x0128_1003, try ENCODE("    ld    r1, [r2] + r3 lsl 4"));
-    try std.testing.expectEqual(0x012C_1003, try ENCODE("    ld    r1, [r2] - r3 lsl 4"));
+    try std.testing.expectEqual(0x0128_0003, try ENCODE("ld r1, [r2] + r3"));
+    try std.testing.expectEqual(0x012C_0003, try ENCODE("ld r1, [r2] - r3"));
+    try std.testing.expectEqual(0x0128_1003, try ENCODE("ld r1, [r2] + r3 lsl 4"));
+    try std.testing.expectEqual(0x012C_1003, try ENCODE("ld r1, [r2] - r3 lsl 4"));
 }
 
 test "Datatransfer -- Post-increment writeback immediate" {
-    try std.testing.expectEqual(0x1128_02AA, try ENCODE("    ld    r1, [r2] + 0x02AA"));
-    try std.testing.expectEqual(0x112C_02AA, try ENCODE("    ld    r1, [r2] - 0x02AA"));
+    try std.testing.expectEqual(0x1128_02AA, try ENCODE("ld r1, [r2] + 0x02AA"));
+    try std.testing.expectEqual(0x112C_02AA, try ENCODE("ld r1, [r2] - 0x02AA"));
 }
 
 test "Datatransfer -- Implicitly shifted immediate" {
-    try std.testing.expectEqual(0x1120_12AA, try ENCODE("    ld    r1, [r2 + 0x2AA0]"));
-    try std.testing.expectEqual(0x1120_2851, try ENCODE("    ld    r1, [r2 + 0x14400]"));
-    try std.testing.expectEqual(0x1120_1992, try ENCODE("    ld    r1, [r2 + 0x6480]"));
-    try std.testing.expectEqual(0x1120_2341, try ENCODE("    ld    r1, [r2 + 0x34100]"));
+    try std.testing.expectEqual(0x1120_12AA, try ENCODE("ld r1, [r2 + 0x2AA0]"));
+    try std.testing.expectEqual(0x1120_2851, try ENCODE("ld r1, [r2 + 0x14400]"));
+    try std.testing.expectEqual(0x1120_1992, try ENCODE("ld r1, [r2 + 0x6480]"));
+    try std.testing.expectEqual(0x1120_2341, try ENCODE("ld r1, [r2 + 0x34100]"));
 }
 
 // --- Move From PSR Instruction
 
 test "MoveFromPsr -- Unexpected EOL" {
-    try std.testing.expectError(error.ParseError, ENCODE("    smv"));
+    try std.testing.expectError(error.ParseError, ENCODE("smv"));
 }
 
 test "MoveFromPsr -- Unexpected token" {
-    try std.testing.expectError(error.ParseError, ENCODE("    smv!"));
-    try std.testing.expectError(error.ParseError, ENCODE("    smv r1!"));
+    try std.testing.expectError(error.ParseError, ENCODE("smv!"));
+    try std.testing.expectError(error.ParseError, ENCODE("smv r1!"));
 }
 
-test "MoveFromPsr --"
+test "MoveFromPsr -- Encoding" {
+    try std.testing.expectEqual(0x0101_8000, ENCODE("smv r1"));
+}
+
+// --- Set / Clear PSR Bits Instructions
+
+test "SetClearPsrBits -- Unexpected EOL" {
+    try std.testing.expectError(error.ParseError, ENCODE("sst"));
+    try std.testing.expectError(error.ParseError, ENCODE("scl"));
+}
+
+test "SetClearPsrBits -- Unexpected token" {
+    try std.testing.expectError(error.ParseError, ENCODE("sst!"));
+    try std.testing.expectError(error.ParseError, ENCODE("sst r1!"));
+    try std.testing.expectError(error.ParseError, ENCODE("scl!"));
+    try std.testing.expectError(error.ParseError, ENCODE("scl r1!"));
+}
+
+test "SetClearPsrBits -- Unencodable immediate value" {
+    try std.testing.expectError(error.ParseError, ENCODE("sst 0xFFF"));
+}
+
+test "SetClearPsrBits -- Register value" {
+    try std.testing.expectEqual(0x2003_8001, ENCODE("sst r1"));
+    try std.testing.expectEqual(0x2001_8001, ENCODE("scl r1"));
+}
+
+// --- Data Processing Instructions
+
+test "DataProcessing -- Unexpected EOL" {
+    try std.testing.expectError(error.ParseError, ENCODE("add"));
+    try std.testing.expectError(error.ParseError, ENCODE("add r1"));
+    try std.testing.expectError(error.ParseError, ENCODE("add r1,"));
+    try std.testing.expectError(error.ParseError, ENCODE("add r1, r2"));
+    try std.testing.expectError(error.ParseError, ENCODE("add r1, r2,"));
+    try std.testing.expectError(error.ParseError, ENCODE("add r1, r2, r3 lsl"));
+}
+
+test "DataProcessing -- Unexpected token" {
+    try std.testing.expectError(error.ParseError, ENCODE("add!"));
+    try std.testing.expectError(error.ParseError, ENCODE("add r1!"));
+    try std.testing.expectError(error.ParseError, ENCODE("add r1,!"));
+    try std.testing.expectError(error.ParseError, ENCODE("add r1, r2!"));
+    try std.testing.expectError(error.ParseError, ENCODE("add r1, r2,!"));
+    try std.testing.expectError(error.ParseError, ENCODE("add r1, r2, r3!"));
+    try std.testing.expectError(error.ParseError, ENCODE("add r1, r2, r3 lsl!"));
+    try std.testing.expectError(error.ParseError, ENCODE("add r1, r2, r3 lsl r4!"));
+    try std.testing.expectError(error.ParseError, ENCODE("add r1, r2, r3 lsl 4!"));
+}
+
+test "DataProcessing -- Unencodable immediate value" {
+    try std.testing.expectEqual(error.ParseError, ENCODE("add r1, r2, 0x200"));
+}
+
+test "DataProcessing -- Unencodable shift value" {
+    try std.testing.expectEqual(error.ParseError, ENCODE("add r1, r2, r3 lsl 32"));
+    try std.testing.expectEqual(error.ParseError, ENCODE("add r1, r2, r3 lsr 33"));
+}
+
+test "DataTransfer -- Opcode variants" {
+    try std.testing.expectEqual(0x4120_0003, try ENCODE("add    r1, r2, r3"));
+    try std.testing.expectEqual(0x4122_0003, try ENCODE("adc    r1, r2, r3"));
+    try std.testing.expectEqual(0x4124_0003, try ENCODE("sub    r1, r2, r3"));
+    try std.testing.expectEqual(0x4126_0003, try ENCODE("sbc    r1, r2, r3"));
+    try std.testing.expectEqual(0x4128_0003, try ENCODE("and    r1, r2, r3"));
+    try std.testing.expectEqual(0x412A_0003, try ENCODE("or     r1, r2, r3"));
+    try std.testing.expectEqual(0x412C_0003, try ENCODE("xor    r1, r2, r3"));
+    try std.testing.expectEqual(0x412E_0003, try ENCODE("btc    r1, r2, r3"));
+    try std.testing.expectEqual(0x4121_0003, try ENCODE("addx   r1, r2, r3"));
+    try std.testing.expectEqual(0x4123_0003, try ENCODE("adcx   r1, r2, r3"));
+    try std.testing.expectEqual(0x4125_0003, try ENCODE("subx   r1, r2, r3"));
+    try std.testing.expectEqual(0x4127_0003, try ENCODE("sbcx   r1, r2, r3"));
+    try std.testing.expectEqual(0x4129_0003, try ENCODE("andx   r1, r2, r3"));
+    try std.testing.expectEqual(0x412B_0003, try ENCODE("orx    r1, r2, r3"));
+    try std.testing.expectEqual(0x412D_0003, try ENCODE("xorx   r1, r2, r3"));
+    try std.testing.expectEqual(0x412F_0003, try ENCODE("btcx   r1, r2, r3"));
+}
+
+test "DataTransfer -- Immediate value" {
+    try std.testing.expectEqual(0x5120_00AA, try ENCODE("add r1, r2, 0xAA"));
+}
+
+test "DataTransfer -- Register value, register shift" {
+    try std.testing.expectEqual(0x4120_1003, try ENCODE("add r1, r2, r3 lsl r4"));
+    try std.testing.expectEqual(0x4120_9003, try ENCODE("add r1, r2, r3 lsr r4"));
+    try std.testing.expectEqual(0x4121_9003, try ENCODE("add r1, r2, r3 asr r4"));
+}
+
+test "DataTransfer -- Immediate value, register shift" {
+    try std.testing.expectEqual(0x5120_10AA, try ENCODE("add r1, r2, 0xAA lsl r4"));
+    try std.testing.expectEqual(0x5120_90AA, try ENCODE("add r1, r2, 0xAA lsr r4"));
+    try std.testing.expectEqual(0x5121_90AA, try ENCODE("add r1, r2, 0xAA asr r4"));
+}
+
+test "DataTransfer -- Register value, immediate shift" {
+    try std.testing.expectEqual(0x6120_1003, try ENCODE("add r1, r2, r3 lsl 4"));
+    try std.testing.expectEqual(0x6120_9003, try ENCODE("add r1, r2, r3 lsr 4"));
+    try std.testing.expectEqual(0x6121_9003, try ENCODE("add r1, r2, r3 asr 4"));
+    try std.testing.expectEqual(0x6120_8003, try ENCODE("add r1, r2, r3 lsr 32"));
+}
+
+test "DataTransfer -- Immediate value, immediate shift" {
+    try std.testing.expectEqual(0x7120_10AA, try ENCODE("add r1, r2, 0xAA lsl 4"));
+    try std.testing.expectEqual(0x7120_90AA, try ENCODE("add r1, r2, 0xAA lsr 4"));
+    try std.testing.expectEqual(0x7121_90AA, try ENCODE("add r1, r2, 0xAA asr 4"));
+    try std.testing.expectEqual(0x7120_80AA, try ENCODE("add r1, r2, 0xAA lsr 32"));
+}
+
+// --- Data Processing Pseudo-Instructions
+
+test "DataProcessing Pseudo -- Unexpected EOL" {
+    try std.testing.expectError(error.ParseError, ENCODE("tst"));
+    try std.testing.expectError(error.ParseError, ENCODE("tst r1"));
+    try std.testing.expectError(error.ParseError, ENCODE("tst r1,"));
+    try std.testing.expectError(error.ParseError, ENCODE("not"));
+    try std.testing.expectError(error.ParseError, ENCODE("not r1"));
+    try std.testing.expectError(error.ParseError, ENCODE("not r1,"));
+    try std.testing.expectError(error.ParseError, ENCODE("lsl, r1"));
+    try std.testing.expectError(error.ParseError, ENCODE("lsl, r1,"));
+    try std.testing.expectError(error.ParseError, ENCODE("lsl, r1, r2,"));
+    try std.testing.expectError(error.ParseError, ENCODE("mov"));
+    try std.testing.expectError(error.ParseError, ENCODE("mov,"));
+    try std.testing.expectError(error.ParseError, ENCODE("mov, r1"));
+    try std.testing.expectError(error.ParseError, ENCODE("mov, r1,"));
+}
+
+test "DataProcessing Pseudo -- Unexpected token" {
+    try std.testing.expectError(error.ParseError, ENCODE("nop!"));
+    try std.testing.expectError(error.ParseError, ENCODE("tst!"));
+    try std.testing.expectError(error.ParseError, ENCODE("tst r1!"));
+    try std.testing.expectError(error.ParseError, ENCODE("tst r1,!"));
+    try std.testing.expectError(error.ParseError, ENCODE("not!"));
+    try std.testing.expectError(error.ParseError, ENCODE("not r1!"));
+    try std.testing.expectError(error.ParseError, ENCODE("not r1,!"));
+    try std.testing.expectError(error.ParseError, ENCODE("lsl, r1!"));
+    try std.testing.expectError(error.ParseError, ENCODE("lsl, r1,!"));
+    try std.testing.expectError(error.ParseError, ENCODE("lsl, r1, r2,!"));
+    try std.testing.expectError(error.ParseError, ENCODE("lsl, r1, r2, r3!"));
+    try std.testing.expectError(error.ParseError, ENCODE("mov!"));
+    try std.testing.expectError(error.ParseError, ENCODE("mov,!"));
+    try std.testing.expectError(error.ParseError, ENCODE("mov, r1!"));
+    try std.testing.expectError(error.ParseError, ENCODE("mov, r1,!"));
+    try std.testing.expectError(error.ParseError, ENCODE("mov, r1, r2!"));
+}
+
+test "DataProcessing Pseudo -- Instruction variants" {
+    try std.testing.expectEqual(0x4001_0000, try ENCODE("nop"));
+    try std.testing.expectEqual(0x4018_0002, try ENCODE("tst    r1, r2"));
+    try std.testing.expectEqual(0x401C_0002, try ENCODE("teq    r1, r2"));
+    try std.testing.expectEqual(0x4014_0002, try ENCODE("cmp    r1, r2"));
+    try std.testing.expectEqual(0x4010_0002, try ENCODE("cpn    r1, r2"));
+    try std.testing.expectEqual(0x512C_03FF, try ENCODE("not    r1, r2"));
+    try std.testing.expectEqual(0x512D_03FF, try ENCODE("notx   r1, r2"));
+    try std.testing.expectEqual(0x410A_0C02, try ENCODE("lsl    r1, r2, r3"));
+    try std.testing.expectEqual(0x410A_8C02, try ENCODE("lsr    r1, r2, r3"));
+    try std.testing.expectEqual(0x410B_8C02, try ENCODE("asr    r1, r2, r3"));
+    try std.testing.expectEqual(0x410B_0C02, try ENCODE("lslx   r1, r2, r3"));
+    try std.testing.expectEqual(0x4121_0000, try ENCODE("mov    r1, r2"));
+}
+
+// --- Branch Instructions
+
+test "Branch -- Unexpected EOL" {
+    try std.testing.expectError(error.ParseError, INST("b"));
+}
+
+test "Branch -- Unexpected token" {
+    try std.testing.expectError(error.ParseError, INST("b!"));
+    try std.testing.expectError(error.ParseError, INST("b r1!"));
+    try std.testing.expectError(error.ParseError, INST("b label!"));
+}
+
+test "Branch -- Instruction variants, register" {
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8000_0001 }, INST("beq     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8100_0001 }, INST("bne     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8200_0001 }, INST("bcs     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8300_0001 }, INST("bcc     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8400_0001 }, INST("bmi     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8500_0001 }, INST("bpl     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8600_0001 }, INST("bvs     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8700_0001 }, INST("bvc     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8800_0001 }, INST("bhi     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8900_0001 }, INST("bls     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8A00_0001 }, INST("bge     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8B00_0001 }, INST("blt     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8C00_0001 }, INST("bgt     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8D00_0001 }, INST("ble     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8E00_0001 }, INST("b       r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xA000_0001 }, INST("bleq    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xA100_0001 }, INST("blne    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xA200_0001 }, INST("blcs    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xA300_0001 }, INST("blcc    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xA400_0001 }, INST("blmi    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xA500_0001 }, INST("blpl    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xA600_0001 }, INST("blvs    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xA700_0001 }, INST("blvc    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xA800_0001 }, INST("blhi    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xA900_0001 }, INST("blls    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xAA00_0001 }, INST("blge    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xAB00_0001 }, INST("bllt    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xAC00_0001 }, INST("blgt    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xAD00_0001 }, INST("blle    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xAE00_0001 }, INST("bl      r1"));
+}
+
+test "Branch -- Instruction variants, label" {
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8000_0000, .reloc = "label" }, INST("beq     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8100_0000, .reloc = "label" }, INST("bne     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8200_0000, .reloc = "label" }, INST("bcs     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8300_0000, .reloc = "label" }, INST("bcc     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8400_0000, .reloc = "label" }, INST("bmi     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8500_0000, .reloc = "label" }, INST("bpl     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8600_0000, .reloc = "label" }, INST("bvs     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8700_0000, .reloc = "label" }, INST("bvc     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8800_0000, .reloc = "label" }, INST("bhi     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8900_0000, .reloc = "label" }, INST("bls     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8A00_0000, .reloc = "label" }, INST("bge     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8B00_0000, .reloc = "label" }, INST("blt     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8C00_0000, .reloc = "label" }, INST("bgt     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8D00_0000, .reloc = "label" }, INST("ble     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8E00_0000, .reloc = "label" }, INST("b       label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xA000_0000, .reloc = "label" }, INST("bleq    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xA100_0000, .reloc = "label" }, INST("blne    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xA200_0000, .reloc = "label" }, INST("blcs    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xA300_0000, .reloc = "label" }, INST("blcc    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xA400_0000, .reloc = "label" }, INST("blmi    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xA500_0000, .reloc = "label" }, INST("blpl    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xA600_0000, .reloc = "label" }, INST("blvs    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xA700_0000, .reloc = "label" }, INST("blvc    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xA800_0000, .reloc = "label" }, INST("blhi    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xA900_0000, .reloc = "label" }, INST("blls    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xAA00_0000, .reloc = "label" }, INST("blge    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xAB00_0000, .reloc = "label" }, INST("bllt    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xAC00_0000, .reloc = "label" }, INST("blgt    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xAD00_0000, .reloc = "label" }, INST("blle    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xAE00_0000, .reloc = "label" }, INST("bl      label"));
+}
+
+// --- Move Immediate Instruction
+
+test "MoveImmediate -- Unexpected EOL" {
+    try std.testing.expectError(error.ParseError, ENCODE("mvi"));
+    try std.testing.expectError(error.ParseError, ENCODE("mvi r1"));
+    try std.testing.expectError(error.ParseError, ENCODE("mvi r1,"));
+}
+
+test "MoveImmediate -- Unexpected token" {
+    try std.testing.expectError(error.ParseError, ENCODE("mvi!"));
+    try std.testing.expectError(error.ParseError, ENCODE("mvi r1!"));
+    try std.testing.expectError(error.ParseError, ENCODE("mvi r1,!"));
+    try std.testing.expectError(error.ParseError, ENCODE("mvi r1,!"));
+}
+
+test "MoveImmediate -- Unencodable value" {
+    try std.testing.expectError(error.ParseError, ENCODE("mvi r1, 0x01FF_FFFF"));
+    try std.testing.expectError(error.ParseError, ENCODE("mvi r1, -0x01FF_FFFF"));
+}
+
+test "MoveImmediate -- Encoding" {
+    try std.testing.expectEqual(0xC100_00AA, ENCODE("mvi r1, 0xAA"));
+    try std.testing.expectEqual(0xD1FF_FF56, ENCODE("mvi r1, -0xAA"));
+}
+
+// --- Software Interrupt Instruction
+
+test "SoftwareInterrupt -- Unexpected token" {
+    try std.testing.expectError(error.ParseError, ENCODE("swi!"));
+    try std.testing.expectError(error.ParseError, ENCODE("swi 0xAA!"));
+}
+
+test "SoftwareInterrupt -- Unencodable value" {
+    try std.testing.expectError(error.ParseError, ENCODE("swi 0xDEAD_BEEF"));
+}
+
+test "SoftwareInterrupt -- Encoding" {
+    try std.testing.expectEqual(0xFEAD_BEEF, ENCODE("swi 0x0EAD_BEEF"));
+}
+
+// --- Move32 Instruction
+
+test "Move32 -- Unexpected EOL" {
+    try std.testing.expectError(error.ParseError, ENCODE("mov32"));
+    try std.testing.expectError(error.ParseError, ENCODE("mov32 r1"));
+    try std.testing.expectError(error.ParseError, ENCODE("mov32 r1,"));
+}
+
+test "Move32 -- Unexpected token" {
+    try std.testing.expectError(error.ParseError, ENCODE("mov32!"));
+    try std.testing.expectError(error.ParseError, ENCODE("mov32 r1!"));
+    try std.testing.expectError(error.ParseError, ENCODE("mov32 r1,!"));
+    try std.testing.expectError(error.ParseError, ENCODE("mov32 r1, label!"));
+    try std.testing.expectError(error.ParseError, ENCODE("mov32 r1, 0xDEAD_BEEF!"));
+}
+
+test "Move32 -- Unencodable value" {
+    try std.testing.expectError(error.ParseError, ENCODE("mov32, r1, 0xFFFF_FFFF_FFFF"));
+}
+
+test "Move32 -- Encoding, label" {
+    try std.testing.expectEqualDeep(
+        Instruction{ .encoding = 0xC100_0000, .extension = 0x7101_6000, .reloc = "label" },
+        INST("mov32 r1, label"),
+    );
+}
+
+test "Move32 -- Encoding, immediate" {
+    try std.testing.expectEqual(
+        Instruction{ .encoding = 0xC1AD_BEEF, .extension = 0x7101_60DE },
+        INST("mov32 r1, 0xDEADBEEF"),
+    );
+}

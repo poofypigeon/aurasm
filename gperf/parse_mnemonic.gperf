@@ -54,6 +54,7 @@ andx,  ANDX
 orx,   ORX
 xorx,  XORX
 btcx,  BTCX
+notx,  NOTX
 b,     B
 beq,   BEQ
 bne,   BNE

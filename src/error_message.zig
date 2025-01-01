@@ -2,7 +2,7 @@ const std = @import("std");
 
 const stderr = std.io.getStdErr();
 
-const globals = @import("globals.zig");
+// const globals = @import("globals.zig");
 
 const Tokenizer = @import("tokenizer.zig").Tokenizer;
 
@@ -33,30 +33,30 @@ pub const ParseError = struct {
     }
 };
 
-/// Output an error message to stderr.
-/// The error message includes a premable including the file path, row and
-/// column where the most recently scanned token is located.
-pub fn printError(comptime fmt: []const u8, args: anytype) !void {
-    var buffer = std.io.bufferedWriter(stderr.writer());
-    var writer = buffer.writer();
-
-    // Error preamble
-    try writer.print(
-        "{s}:{d}:{d}: " ++ red ++ "error: " ++ reset,
-        .{
-            globals.path.items,
-            globals.lineNumber + 1,
-            globals.columnNumber + 1,
-        },
-    );
-
-    // Error message
-    try writer.print(fmt, args);
-
-    try buffer.flush();
-}
-
-pub fn displayTokenInLine(tokenizer: *Tokenizer) !void {
+// /// Output an error message to stderr.
+// /// The error message includes a premable including the file path, row and
+// /// column where the most recently scanned token is located.
+// pub fn printError(comptime fmt: []const u8, args: anytype) !void {
+//     var buffer = std.io.bufferedWriter(stderr.writer());
+//     var writer = buffer.writer();
+//
+//     // Error preamble
+//     try writer.print(
+//         "{s}:{d}:{d}: " ++ red ++ "error: " ++ reset,
+//         .{
+//             globals.path.items,
+//             globals.lineNumber + 1,
+//             globals.columnNumber + 1,
+//         },
+//     );
+//
+//     // Error message
+//     try writer.print(fmt, args);
+//
+//     try buffer.flush();
+// }
+//
+pub fn displayTokenInLine(tokenizer: Tokenizer) !void {
     var buffer = std.io.bufferedWriter(stderr.writer());
     var writer = buffer.writer();
 

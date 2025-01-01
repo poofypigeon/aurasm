@@ -1,8 +1,6 @@
 const std = @import("std");
 const ascii = std.ascii;
 
-const globals = @import("globals.zig");
-
 /// Processes a u8 slice into tokens.
 /// Any collection of consecutive alphanumeric characters are considered tokens.
 /// Any non-alphanumeric characters besides whitespace are additionally considered distinct tokens.
@@ -37,7 +35,6 @@ pub const Tokenizer = struct {
         // Skip whitespace
         while (ascii.isWhitespace(self.line[self.tokenEnd])) : (self.tokenEnd += 1) {}
         self.tokenStart = self.tokenEnd;
-        globals.columnNumber = self.tokenEnd;
         if (self.tokenStart == self.line.len) return null;
 
         // Treat comments as end-of-line
@@ -49,7 +46,7 @@ pub const Tokenizer = struct {
             return self.line[self.tokenStart..self.tokenEnd];
         }
 
-        // Consume characters until a non-label character or underscore is encountered
+        // Consume characters until a non-label character is encountered
         while (isLabelChar(self.line[self.tokenEnd])) : (self.tokenEnd += 1) {}
         return self.line[self.tokenStart..self.tokenEnd];
     }
