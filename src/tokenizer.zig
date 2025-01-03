@@ -1,60 +1,67 @@
+//! Processes a u8 slice into tokens.
+//! Any collection of consecutive alphanumeric characters are considered tokens.
+//! Any non-alphanumeric characters besides whitespace are additionally considered distinct tokens.
+
 const std = @import("std");
 const ascii = std.ascii;
 
-/// Processes a u8 slice into tokens.
-/// Any collection of consecutive alphanumeric characters are considered tokens.
-/// Any non-alphanumeric characters besides whitespace are additionally considered distinct tokens.
-pub const Tokenizer = struct {
-    line: [:0]const u8,
-    tokenStart: u32,
-    tokenEnd: u32,
-    again: bool,
+const Self = @This();
 
-    pub fn init(line: [:0]const u8) Tokenizer {
-        return Tokenizer{
-            .line = line,
-            .tokenStart = 0,
-            .tokenEnd = 0,
-            .again = false,
-        };
-    }
+line: []const u8,
+tokenStart: u32,
+tokenEnd: u32,
+again: bool,
 
-    /// Returns next token in slice.
-    /// If there are no more tokens to be read, returns error.EndOfLine
-    pub fn next(self: *Tokenizer) ?[]const u8 {
-        if (self.again) {
-            self.again = false;
-            return self.line[self.tokenStart..self.tokenEnd];
-        }
+pub fn init(line: []const u8) Self {
+    return .{
+        .line = line,
+        .tokenStart = 0,
+        .tokenEnd = 0,
+        .again = false,
+    };
+}
 
-        if (self.tokenEnd == self.line.len) {
-            self.tokenStart = self.tokenEnd;
-            return null;
-        }
-
-        // Skip whitespace
-        while (ascii.isWhitespace(self.line[self.tokenEnd])) : (self.tokenEnd += 1) {}
-        self.tokenStart = self.tokenEnd;
-        if (self.tokenStart == self.line.len) return null;
-
-        // Treat comments as end-of-line
-        if (self.line[self.tokenStart] == ';') return null;
-
-        // Any non-alphanumeric characters besides whitespace and underscores are considered tokens
-        if (!isLabelChar(self.line[self.tokenEnd])) {
-            self.tokenEnd += 1;
-            return self.line[self.tokenStart..self.tokenEnd];
-        }
-
-        // Consume characters until a non-label character is encountered
-        while (isLabelChar(self.line[self.tokenEnd])) : (self.tokenEnd += 1) {}
+/// Returns next token in slice.
+/// If there are no more tokens to be read, returns error.EndOfLine
+pub fn next(self: *Self) ?[]const u8 {
+    if (self.again) {
+        self.again = false;
         return self.line[self.tokenStart..self.tokenEnd];
     }
 
-    pub inline fn putBack(self: *Tokenizer) void {
-        self.again = true;
+    if (self.tokenEnd == self.line.len) {
+        self.tokenStart = self.tokenEnd;
+        return null;
     }
-};
+
+    // Skip whitespace
+    while (self.tokenEnd < self.line.len) {
+        if (!ascii.isWhitespace(self.line[self.tokenEnd])) break;
+        self.tokenEnd += 1;
+    }
+    self.tokenStart = self.tokenEnd;
+    if (self.tokenStart == self.line.len) return null;
+
+    // Treat comments as end-of-line
+    if (self.line[self.tokenStart] == ';') return null;
+
+    // Any non-alphanumeric characters besides whitespace and underscores are considered tokens
+    if (!isLabelChar(self.line[self.tokenEnd])) {
+        self.tokenEnd += 1;
+        return self.line[self.tokenStart..self.tokenEnd];
+    }
+
+    // Consume characters until a non-label character is encountered
+    while (self.tokenEnd < self.line.len) {
+        if (!isLabelChar(self.line[self.tokenEnd])) break;
+        self.tokenEnd += 1;
+    }
+    return self.line[self.tokenStart..self.tokenEnd];
+}
+
+pub inline fn putBack(self: *Self) void {
+    self.again = true;
+}
 
 inline fn isLabelChar(c: u8) bool {
     return ascii.isAlphanumeric(c) or c == '_';
