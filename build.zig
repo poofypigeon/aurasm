@@ -14,11 +14,9 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
-    exe.addIncludePath(.{
-        .path = "src/",
-    });
+    exe.addIncludePath(b.path("src"));
 
-    const run_cmd = exe.run();
+    const run_cmd = b.run();
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         run_cmd.addArgs(args);

@@ -1,45 +1,53 @@
-    text
-    export Vect
-Vect    
-    mov     lr, 0x10000000
-    b       ResetHandler
-    b       BusFaultHandler
-    b       UsageFaultHandler
-    b       SysCallHandler
-    b       InstrHandler
-    b       SysTickHandler
+    .text
+    .export start
+start:
+    mov32 r1, my_string
+    bl strlen
+    bl fibonacci
+end:
+    b end
 
-ResetHandler
-        
+; r1 holds pointer to string in memory
+; length of string is returned in r1
+strlen:
+    mov r13, r1     ; move string pointer to scratch
+    mvi r1, 0       ; initialize counter
+strlen_loop:
+    ld r2, [r13] + 1
+    cmp r2, 0
+    beq lr
+    add r1, r1, 1
+    b strlen_loop
     
-BusFaultHandler
-    ; save general register state
-    st      r13 [sp] -4
-    st      r12 [sp] -4
-    st      r11 [sp] -4
-    st      r10 [sp] -4
-    st      r9  [sp] -4
-    st      r8  [sp] -4
-    st      r7  [sp] -4
-    st      r6  [sp] -4
-    st      r5  [sp] -4
-    st      r4  [sp] -4
-    st      r3  [sp] -4
-    st      r2  [sp] -4
-    st      r1  [sp] -4
-    ; set r13 to base address of saved registers
-    mov     r13, sp
-    ; switch to system mode
-    msr     r1
-    btc     r1 0x40
-    mrs     r1
-    ; load instruction that raised the exception
-    ld      r1 [lr - 4]
-    ; reconstruct address that triggered fault
-    and     r2, r1, 0xF lsl 20  ; mask out base address
-    lsr     r2, 20              ; right align
-    ld      r2, [r13 + r2]      ; load base address register value
+; returns fibonacci number where r1 hold the number of iterations to run
+; result is returned in r1
+fibonacci:
+    mov r13, r1     ; move iteration count to scratch
+    mvi r1, 1       ; most recent fibonacci number
+    mvi r2, 1       ; second most recent
+    cmp r13, 0
+fibonacci_loop:
+    beq lr          ; break if iterations reached
+    add r2, r1, r2
+    xor r1, r1, r2  ; swap in place
+    xor r2, r2, r1
+    xor r1, r1, r2
+    sub r13, r13, 1 ; decrement iteration counter
+    b fibonacci_loop
 
-
-
-
+    .export multiply
+multiply:
+    mov r3, r1
+    mvi r13, -1
+    mvi r1, 0
+multiply_loop:
+    add r13, r13, 1
+    lsr r3, r3, 1
+    bcc multiply_loop
+    addx r1, r1, r2 lsl r13
+    bne multiply_loop
+    b lr
+   
+    .data
+my_string
+    .word * .string "here is a string"

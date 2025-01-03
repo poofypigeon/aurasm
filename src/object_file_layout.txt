@@ -1,0 +1,33 @@
+HEADER:
+    4 bytes - symbol table start
+    4 bytes - export table start
+    4 bytes - relocation table start
+    .bss
+    4 bytes - bss table length
+    {
+        4 bytes - symbol table index
+        4 bytes - bss entry size
+    }
+    .data
+    4 bytes - data section length
+    {
+    }
+    .text
+    4 bytes - text section length
+    {
+    }
+
+
+
+    symbols can be:
+        - local
+            - (within section) already resolved, not in table
+            - (data section) needs to be resolved when linker places sections relative to eachother
+        - exported
+            - may 
+        - external
+        - bss
+
+
+
+
