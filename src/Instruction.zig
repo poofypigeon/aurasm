@@ -671,7 +671,7 @@ test "Invalid mnemonic" {
     try std.testing.expectError(error.ParseError, Self.encode(&line, &err));
 }
 
-// --- Data Transfer Selfs
+// --- Data Transfer Instructions
 
 test "DataTransfer -- Unexpected EOL" {
     try std.testing.expectError(error.ParseError, ENCODE("ld"));
@@ -793,7 +793,7 @@ test "MoveFromPsr -- Encoding" {
     try std.testing.expectEqual(0x0101_8000, ENCODE("smv r1"));
 }
 
-// --- Set / Clear PSR Bits Selfs
+// --- Set / Clear PSR Bits Instructions
 
 test "SetClearPsrBits -- Unexpected EOL" {
     try std.testing.expectError(error.ParseError, ENCODE("sst"));
@@ -816,7 +816,7 @@ test "SetClearPsrBits -- Register value" {
     try std.testing.expectEqual(0x2001_8001, ENCODE("scl r1"));
 }
 
-// --- Data Processing Selfs
+// --- Data Processing Instructions
 
 test "DataProcessing -- Unexpected EOL" {
     try std.testing.expectError(error.ParseError, ENCODE("add"));
@@ -897,7 +897,7 @@ test "DataTransfer -- Immediate value, immediate shift" {
     try std.testing.expectEqual(0x7120_80AA, try ENCODE("add r1, r2, 0xAA lsr 32"));
 }
 
-// --- Data Processing Pseudo-Selfs
+// --- Data Processing Pseudo-Instructions
 
 test "DataProcessing Pseudo -- Unexpected EOL" {
     try std.testing.expectError(error.ParseError, ENCODE("tst"));
@@ -949,7 +949,7 @@ test "DataProcessing Pseudo -- Self variants" {
     try std.testing.expectEqual(0x4121_0000, try ENCODE("mov    r1, r2"));
 }
 
-// --- Branch Selfs
+// --- Branch Instructions
 
 test "Branch -- Unexpected EOL" {
     try std.testing.expectError(error.ParseError, INST("b"));
