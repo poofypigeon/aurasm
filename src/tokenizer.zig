@@ -21,8 +21,7 @@ pub fn init(line: []const u8) Self {
     };
 }
 
-/// Returns next token in slice.
-/// If there are no more tokens to be read, returns error.EndOfLine
+/// Returns the next token in the slice, or null if no tokens remain.
 pub fn next(self: *Self) ?[]const u8 {
     if (self.again) {
         self.again = false;
@@ -59,6 +58,7 @@ pub fn next(self: *Self) ?[]const u8 {
     return self.line[self.tokenStart..self.tokenEnd];
 }
 
+/// The following call to `next` will repeat the previously returned token.
 pub inline fn putBack(self: *Self) void {
     self.again = true;
 }

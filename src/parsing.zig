@@ -50,7 +50,8 @@ pub fn parseOperand(token: []const u8) !Operand {
     return Operand{ .label = token };
 }
 
-inline fn expectRegister(line: *Tokenizer, diag: *Diagnostic) !u4 {
+/// Shorthand for a call to `parseOperand` where only a register is expected.
+pub fn expectRegister(line: *Tokenizer, diag: *Diagnostic) !u4 {
     const token = line.next() orelse {
         try diag.msg("expected register\n", .{});
         return error.ParseError;
@@ -69,7 +70,9 @@ inline fn expectRegister(line: *Tokenizer, diag: *Diagnostic) !u4 {
     }
 }
 
-inline fn expectRegisterOrValue(line: *Tokenizer, diag: *Diagnostic) !Operand {
+/// Shorthand for a call to `parseOperand` where only a register or immediate
+/// value is expected.
+pub fn expectRegisterOrValue(line: *Tokenizer, diag: *Diagnostic) !Operand {
     const token = line.next() orelse {
         try diag.msg("expected register or value\n", .{});
         return error.ParseError;
@@ -90,6 +93,25 @@ inline fn expectRegisterOrValue(line: *Tokenizer, diag: *Diagnostic) !Operand {
     }
 }
 
+/// If the next token in `line` is a character contained in `expect`, returns
+/// that character and consume the token. Otherwise, returns `error.ParseError`.
+pub fn expectOperator(comptime expect: []const u8, line: *Tokenizer, diag: *Diagnostic) !u8 {
+    // Operator list fomatted for error message
+    const expectListString = comptime operatorListStr(expect);
+
+    const token = line.next() orelse {
+        try diag.msg("expected {s}\n", .{expectListString});
+        return error.ParseError;
+    };
+    inline for (expect) |c| if (token[0] == c) return c;
+
+    // Token not in operator list
+    try diag.msg("expected " ++ expectListString ++ "\n", .{});
+    return error.ParseError;
+}
+
+// Generates comptime string of characters in list seperated by commas.
+// e.x. operatorListStr("abc") == "'a', 'b', or 'c'"
 fn operatorListStr(comptime list: []const u8) []const u8 {
     return comptime blk: {
         var result: []const u8 = "";
@@ -106,23 +128,11 @@ fn operatorListStr(comptime list: []const u8) []const u8 {
     };
 }
 
-inline fn expectOperator(comptime expect: []const u8, line: *Tokenizer, diag: *Diagnostic) !u8 {
-    // Operator list fomatted for error message
-    const expectListString = comptime operatorListStr(expect);
-
-    const token = line.next() orelse {
-        try diag.msg("expected {s}\n", .{expectListString});
-        return error.ParseError;
-    };
-    inline for (expect) |c| if (token[0] == c) return c;
-
-    // Token not in operator list
-    try diag.msg("expected " ++ expectListString ++ "\n", .{});
-    return error.ParseError;
-}
-
-inline fn optionalOperator(comptime expect: []const u8, line: *Tokenizer) ?u8 {
-    const token = line.next() orelse return null;
+/// If the next token in `line` is a character contained in `expect`, returns
+/// that character and consume the token. Otherwise, returns null and does not
+/// consume the token.
+pub fn optionalOperator(comptime expect: []const u8, line: *Tokenizer) ?u8 {
+    const token = line.next() orelse return '\n';
     inline for (expect) |c| if (token[0] == c) return c;
     line.putBack();
     return null;
@@ -132,7 +142,13 @@ pub inline fn tokenIsLabel(token: []const u8) bool {
     return (ascii.isAlphabetic(token[0]) or token[0] == '_');
 }
 
-pub inline fn parseInteger(token: []const u8) !u32 {
+/// Parses a token into a u32, determining whether it is a decimal, hexadecimal,
+/// or binary value from the leading identifier (`0x` for hexadecimal, `0b` for
+/// binary, otherwise decimal).
+/// If the token is not a valid integer literal, returns `error.Unexpected`.
+/// If the parsed value exceeds 32-bits, returns `error.ValueNotEncodable`.
+/// Underscores are ignored and can be used as a seperating character.
+pub fn parseInteger(token: []const u8) !u32 {
     switch (token[0]) {
         '0' => {
             if (token.len == 1) return 0;
@@ -148,7 +164,11 @@ pub inline fn parseInteger(token: []const u8) !u32 {
     }
 }
 
-pub inline fn parseDec(token: []const u8) !u32 {
+/// Parses a token into a u32, interpretting it as a decimal number.
+/// If a non-decimal character is encountered, returns `error.Unexpected`.
+/// If the parsed value exceeds 32-bits, returns `error.ValueNotEncodable`.
+/// Underscores are ignored and can be used as a seperating character.
+pub fn parseDec(token: []const u8) !u32 {
     var val: u64 = 0;
     for (token) |c| {
         if (c == '_') continue;
@@ -164,7 +184,12 @@ inline fn u8AsDec(c: u8) !u4 {
     return error.Unexpected;
 }
 
-pub inline fn parseHex(token: []const u8) !u32 {
+/// Parses a token into a u32, interpretting it as a hexadecimal number.
+/// Any leading hex literal identifier (e.g. `0x`) must be omitted.
+/// If a non-hexadecimal character is encountered, returns `error.Unexpected`.
+/// If the parsed value exceeds 32-bits, returns `error.ValueNotEncodable`.
+/// Underscores are ignored and can be used as a seperating character.
+pub fn parseHex(token: []const u8) !u32 {
     var val: u64 = 0;
     for (token) |c| {
         if (c == '_') continue;
@@ -182,7 +207,12 @@ inline fn u8AsHex(c: u8) !u4 {
     return error.Unexpected;
 }
 
-pub inline fn parseBin(token: []const u8) !u32 {
+/// Parses a token into a u32, interpretting it as a binary number.
+/// Any leading hex literal identifier (e.g. `0b`) must be omitted.
+/// If a non-binary character is encountered, returns `error.Unexpected`.
+/// If the parsed value exceeds 32-bits, returns `error.ValueNotEncodable`.
+/// Underscores are ignored and can be used as a seperating character.
+pub fn parseBin(token: []const u8) !u32 {
     var val: u64 = 0;
     for (token) |c| {
         if (c == '_') continue;

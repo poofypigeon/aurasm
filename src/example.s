@@ -1,3 +1,8 @@
+    .macro pushState 2
+    st 
+    .endmacro
+
+
     .text
     .export start
 start:
@@ -49,5 +54,5 @@ multiply_loop:
     b lr
    
     .data
-my_string
-    .word * .string "here is a string"
+my_string:
+    .word * .string "jello world!"
