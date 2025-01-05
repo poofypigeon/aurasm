@@ -8,8 +8,8 @@ const ascii = std.ascii;
 const Self = @This();
 
 line: []const u8,
-tokenStart: u32,
-tokenEnd: u32,
+tokenStart: usize,
+tokenEnd: usize,
 again: bool,
 
 pub fn init(line: []const u8) Self {

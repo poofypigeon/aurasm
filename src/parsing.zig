@@ -1,15 +1,15 @@
 const std = @import("std");
 const ascii = std.ascii;
 
-const Tokenizer = @import("tokenizer.zig");
+const Tokenizer = @import("Tokenizer.zig");
 
 const ParseError = error{ParseError};
 
 pub const Diagnostic = struct {
-    text: std.BoundedArray(u8, 64),
+    text: std.BoundedArray(u8, 256),
 
-    pub fn init(allocator: std.mem.Allocator) Diagnostic {
-        return Diagnostic{ .text = std.ArrayList(u8).init(allocator) };
+    pub fn init() !Diagnostic {
+        return Diagnostic{ .text = try std.BoundedArray(u8, 256).init(0) };
     }
 
     pub inline fn msg(self: *Diagnostic, comptime fmt: []const u8, args: anytype) !void {
@@ -138,8 +138,17 @@ pub fn optionalOperator(comptime expect: []const u8, line: *Tokenizer) ?u8 {
     return null;
 }
 
-pub inline fn tokenIsLabel(token: []const u8) bool {
-    return (ascii.isAlphabetic(token[0]) or token[0] == '_');
+pub fn parseSymbol(line: *Tokenizer, diag: *Diagnostic) ![]const u8 {
+    // Parse label
+    const token = line.next() orelse {
+        try diag.msg("expected label\n", .{});
+        return error.ParseError;
+    };
+    if (!ascii.isAlphabetic(token[0]) or token[0] == '_') {
+        try diag.msg("expected label\n", .{});
+        return error.ParseError;
+    }
+    return token;
 }
 
 /// Parses a token into a u32, determining whether it is a decimal, hexadecimal,
@@ -226,4 +235,84 @@ pub fn parseBin(token: []const u8) !u32 {
 inline fn u8AsBin(c: u8) !u1 {
     if (c == '0' or c == '1') return @intCast(c - '0');
     return error.Unexpected;
+}
+
+const baseStringCap = 128;
+
+// TODO: add support for excaped hex values
+pub fn parseString(allocator: std.mem.Allocator, line: *Tokenizer, diag: *Diagnostic) ![]u8 {
+    _ = try expectOperator("\"", line, diag);
+
+    var string: std.ArrayList(u8) = try std.ArrayList(u8).initCapacity(allocator, baseStringCap);
+    errdefer string.deinit();
+
+    while (line.tokenEnd < line.line.len) : (line.tokenEnd += 1) {
+        if (line.line[line.tokenEnd] == '"') {
+            line.tokenEnd += 1;
+            return try string.toOwnedSlice();
+        }
+        if (line.line[line.tokenEnd] == '\\') {
+            line.tokenEnd += 1;
+            if (line.tokenEnd == line.line.len) {
+                try diag.msg("unexpected EOL\n", .{});
+                return error.ParseError;
+            }
+            switch (line.line[line.tokenEnd]) {
+                'n' => try string.append('\n'),
+                't' => try string.append('\t'),
+                else => try string.append(line.line[line.tokenEnd]),
+            }
+            continue;
+        }
+        try string.append(line.line[line.tokenEnd]);
+    }
+    try diag.msg("unexpected EOL\n", .{});
+    return error.ParseError;
+}
+
+/// Cast an unsigned integer to a slice for appending to a file buffer.
+pub inline fn uintAsU8Slice(comptime T: type, encoding: T) []const u8 {
+    const numBytes = comptime switch (@typeInfo(T)) {
+        .Int => |int| blk: {
+            if (int.signedness == .signed) @compileError("T must be u8, u16, or u32");
+            if (int.bits != 8 and int.bits != 16 and int.bits != 32) {
+                @compileError("T must be u8, u16, or u32");
+            }
+            break :blk int.bits / 8;
+        },
+        else => @compileError("T must be u8, u16, or u32"),
+    };
+
+    const littleEndian = std.mem.nativeToLittle(T, encoding);
+    return @as(*const [numBytes]u8, @ptrCast(&littleEndian)).*[0..];
+}
+
+test "uintAsU8Slice" {
+    try std.testing.expectEqualDeep(([4]u8{ 0x11, 0x22, 0x33, 0x44 })[0..4], uintAsU8Slice(u32, 0x44332211));
+    try std.testing.expectEqualDeep(([2]u8{ 0x11, 0x22 })[0..2], uintAsU8Slice(u16, 0x2211));
+    try std.testing.expectEqualDeep(([1]u8{0x11})[0..1], uintAsU8Slice(u8, 0x11));
+}
+
+test "parseString" {
+    const ta = std.testing.allocator;
+    var diag = try Diagnostic.init();
+    var line = Tokenizer.init("\"a string\"");
+    var string = try parseString(ta, &line, &diag);
+    try std.testing.expectEqualDeep("a string", string);
+    ta.free(string);
+    line = Tokenizer.init("\"\\\\\\\"\\n\\t\"");
+    string = try parseString(ta, &line, &diag);
+    try std.testing.expectEqualDeep("\\\"\n\t", string);
+    ta.free(string);
+}
+
+test "parseString -- errors" {
+    const ta = std.testing.allocator;
+    var diag = try Diagnostic.init();
+    var line = Tokenizer.init("\"a string");
+    var res = parseString(ta, &line, &diag);
+    try std.testing.expectError(error.ParseError, res);
+    line = Tokenizer.init("\"a string\\");
+    res = parseString(ta, &line, &diag);
+    try std.testing.expectError(error.ParseError, res);
 }
