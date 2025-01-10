@@ -1,7 +1,7 @@
 const std = @import("std");
 const ascii = std.ascii;
 
-const Tokenizer = @import("tokenizer.zig");
+const Tokenizer = @import("Tokenizer.zig");
 const Diagnostic = parsing.Diagnostic;
 const parsing = @import("parsing.zig");
 
@@ -21,12 +21,12 @@ const Instruction = struct {
 
 const DataTransfer = packed struct(u32) {
     offset: u10 = 0,
-    m: u1 = 0,
+    n: u1 = 0,
     shift: u4 = 0,
     b: u1 = 0,
     h: u1 = 0,
     w: u1 = 0,
-    n: u1 = 0,
+    m: u1 = 0,
     p: u1 = 0,
     rm: u4 = 0,
     rd: u4 = 0,
@@ -611,11 +611,92 @@ fn encodeMove32(line: *Tokenizer, diag: *Diagnostic) !Instruction {
     }
 }
 
-/// Cast a u32 instruction encoding to a slice for appending to a file buffer.
-pub inline fn encodingAsSlice(encoding: u32) []const u8 {
-    const littleEndian = std.mem.nativeToLittle(u32, encoding);
-    return @as(*const [4]u8, @ptrCast(&littleEndian)).*[0..];
+// ================================================================
+//   Disassembly
+// ================================================================
+
+// pub fn disassemble(machineCodeWord: std.mem.Allocator, encoding: u32) ![]u8 {
+//     switch(encoding >> 30) {
+//         0b00 => {
+//             if (((encoding >> 15) & 0b11) == 0b11) {
+//                 if (((encoding >> 29) & 1) == 1) return disassembleSetClearPsrBits(machineCodeWord, encoding);
+//                 return disassembleMoveFromPsr(machineCodeWord, encoding);
+//             }
+//             return disassembleDataTransfer(machineCodeWord, encoding);
+//         },
+//         0b01 => return disassembleDataProcessing(machineCodeWord, encoding),
+//         0b10 => return disassembleBranch(machineCodeWord, encoding),
+//         0b11 => {
+//             if (((encoding >> 29) & 1) == 1) {
+//                 if (((encoding >> 28) & 1) == 1) return disassembleSoftwareInterrupt(machineCodeWord, encoding);
+//                 // Reserved
+//                 return disassembleSoftwareInterrupt(machineCodeWord, encoding);
+//             }
+//             return disassembleMoveImmediate(machineCodeWord, encoding);
+//         }
+//     }
+//     unreachable;
+// }
+
+fn disassembleDataTransfer(allocator: std.mem.Allocator, machineCodeWord: u32) []u8 {
+    const encodedInst: DataTransfer = @bitCast(machineCodeWord);
+    var asmInst: std.ArrayList(u8) = std.ArrayList(u8).initCapacity(allocator, 32);
+    asmInst.appendSlice(" " ** 4);
+    switch (encodedInst.s) {
+        0 => asmInst.appendSlice("ld"),
+        1 => asmInst.appendSlice("st"),
+    }
+    if (encodedInst.m == 1) asmInst.append('s');
+    if (encodedInst.h == 1) {
+        asmInst.append('h');
+    } else if (encodedInst.b == 1) {
+        asmInst.append('b');
+    }
+    asmInst.appendSlice(" r");
+    asmInst.writer().print("{}", .{encodedInst.rd});
+    asmInst.appendSlice(", [r");
+    asmInst.writer().print("{}", .{encodedInst.rm});
+    if (encodedInst.p == 1) asmInst.append(']');
+    switch (encodedInst.n) {
+        0 => asmInst.appendSlice(" + "),
+        1 => asmInst.appendSlice(" - "),
+    }
+    if (encodedInst.i) {
+        const imm = encodedInst.offset << (encodedInst.shift * 2);
+        asmInst.writer().print("{}", .{imm});
+    } else {
+        asmInst.writer().print("r{} lsl {}", .{ encodedInst.offset, encodedInst.shift * 2 });
+    }
+    if (encodedInst.p == 0) {
+        asmInst.append(']');
+        if (encodedInst.w == 1) asmInst.append('!');
+    }
+    return asmInst.toOwnedSlice();
 }
+
+// fn disassembleMoveFromPsr(machineCodeWord: u32) []u8 {
+//     const inst: SetClearPsrBits = @bitCast(machineCodeWord);
+// }
+//
+// fn disassembleSetClearPsrBits(machineCodeWord: u32) []u8 {
+//     const inst: SetClearPsrBits = @bitCast(machineCodeWord);
+// }
+//
+// fn disassembleDataProcessing(machineCodeWord: u32) []u8 {
+//     const inst: SetClearPsrBits = @bitCast(machineCodeWord);
+// }
+//
+// fn disassembleBranch(machineCodeWord: u32) []u8 {
+//     const inst: SetClearPsrBits = @bitCast(machineCodeWord);
+// }
+//
+// fn disassembleMoveImmediate(machineCodeWord: u32) []u8 {
+//     const inst: SetClearPsrBits = @bitCast(machineCodeWord);
+// }
+//
+// fn disassembleSoftwareInterrupt(machineCodeWord: u32) []u8 {
+//     const inst: SetClearPsrBits = @bitCast(machineCodeWord);
+// }
 
 // ================================================================
 //   TESTS
@@ -675,6 +756,8 @@ test "Invalid mnemonic" {
 }
 
 // --- Data Transfer Instructions
+
+// TODO I broke tests by swapping the m and n bits
 
 test "DataTransfer -- Unexpected EOL" {
     try std.testing.expectError(error.ParseError, ENCODE("ld"));

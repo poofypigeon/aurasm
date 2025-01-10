@@ -118,8 +118,7 @@ pub fn parseStaticData(
             Directive.word => returnedArray = try parseStaticData(u32, allocator, 1, line, diag),
             Directive.half => returnedArray = try parseStaticData(u16, allocator, 1, line, diag),
             Directive.byte => returnedArray = try parseStaticData(u8, allocator, 1, line, diag),
-            // Directive.string => returnedArray = try parseStringLiteral(allocator, line, diag),
-            Directive.string => {},
+            Directive.string => returnedArray = try parsing.parseString(allocator, line, diag),
             else => {
                 try diag.msg("expected 'word', 'half', 'byte', or 'string'\n", .{});
                 return error.ParseError;
@@ -178,17 +177,6 @@ pub fn parseStaticData(
     try diag.msg("expected value\n", .{});
     return error.ParseError;
 }
-
-// pub fn parseStringLiteral(
-//     allocator: std.mem.Allocator,
-//     line: *Tokenizer,
-//     diag: *Diagnostic,
-// ) ![]u8 {
-//     _ = allocator;
-//     _ = line;
-//     _ = diag;
-//     return "bee";
-// }
 
 // ================================================================
 //   TESTS
