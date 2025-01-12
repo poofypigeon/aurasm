@@ -1,6 +1,9 @@
-    .macro pushState 2
-    st 
-    .endmacro
+;    .macro pushState 2
+;    st r1, [sp] - 4
+;    st r2, [sp] - 4
+;    st r3, [sp] - 4
+;    st r4, [sp] - 4
+;    .endmacro
 
 
     .text

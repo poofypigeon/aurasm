@@ -43,7 +43,7 @@ pub fn parseOperand(token: []const u8) !Operand {
             return error.Unexpected;
         },
         else => {
-            if (ascii.isDigit(token[0])) return Operand{ .imm = try .parseDec(token) };
+            if (ascii.isDigit(token[0])) return Operand{ .imm = try parseDec(token) };
             if (!(ascii.isAlphabetic(token[0]) or token[0] == '_')) return error.Unexpected;
         },
     }

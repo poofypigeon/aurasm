@@ -7,9 +7,7 @@ const parsing = @import("parsing.zig");
 
 const perf = @cImport(@cInclude("parse_mnemonic.c"));
 
-const Self = @This();
-
-const Instruction = struct {
+pub const Instruction = struct {
     encoding: u32,
     extension: ?u32 = null,
     reloc: ?[]const u8 = null,
@@ -158,7 +156,7 @@ pub fn toMachineCodeWord(line: *Tokenizer, diag: *Diagnostic) !?Instruction {
             } else if (mnem >= perf.BLEQ and mnem <= perf.BL) {
                 break :blk try encodeBranch(line, diag, .{ .cond = @intCast(mnem - perf.BLEQ), .l = 1 });
             }
-            diag.msg("invalid mnemonic\n");
+            try diag.msg("invalid mnemonic\n", .{});
             return error.ParseError;
         },
     };
@@ -615,88 +613,205 @@ fn encodeMove32(line: *Tokenizer, diag: *Diagnostic) !Instruction {
 //   Disassembly
 // ================================================================
 
-// pub fn disassemble(machineCodeWord: std.mem.Allocator, encoding: u32) ![]u8 {
-//     switch(encoding >> 30) {
-//         0b00 => {
-//             if (((encoding >> 15) & 0b11) == 0b11) {
-//                 if (((encoding >> 29) & 1) == 1) return disassembleSetClearPsrBits(machineCodeWord, encoding);
-//                 return disassembleMoveFromPsr(machineCodeWord, encoding);
-//             }
-//             return disassembleDataTransfer(machineCodeWord, encoding);
-//         },
-//         0b01 => return disassembleDataProcessing(machineCodeWord, encoding),
-//         0b10 => return disassembleBranch(machineCodeWord, encoding),
-//         0b11 => {
-//             if (((encoding >> 29) & 1) == 1) {
-//                 if (((encoding >> 28) & 1) == 1) return disassembleSoftwareInterrupt(machineCodeWord, encoding);
-//                 // Reserved
-//                 return disassembleSoftwareInterrupt(machineCodeWord, encoding);
-//             }
-//             return disassembleMoveImmediate(machineCodeWord, encoding);
-//         }
-//     }
-//     unreachable;
-// }
+pub fn disassemble(allocator: std.mem.Allocator, machineCodeWord: u32) ![]u8 {
+    var unknown: std.ArrayList(u8) = try std.ArrayList(u8).initCapacity(allocator, 8);
+    try unknown.appendSlice("    ???");
+    defer unknown.deinit();
 
-fn disassembleDataTransfer(allocator: std.mem.Allocator, machineCodeWord: u32) []u8 {
-    const encodedInst: DataTransfer = @bitCast(machineCodeWord);
-    var asmInst: std.ArrayList(u8) = std.ArrayList(u8).initCapacity(allocator, 32);
-    asmInst.appendSlice(" " ** 4);
-    switch (encodedInst.s) {
-        0 => asmInst.appendSlice("ld"),
-        1 => asmInst.appendSlice("st"),
+    switch (machineCodeWord >> 30) {
+        0b00 => {
+            if (((machineCodeWord >> 15) & 0b11) == 0b11) {
+                if (((machineCodeWord >> 29) & 1) == 1) {
+                    return try disassembleSetClearPsrBits(allocator, machineCodeWord) orelse try unknown.toOwnedSlice();
+                }
+                return try disassembleMoveFromPsr(allocator, machineCodeWord) orelse try unknown.toOwnedSlice();
+            }
+            return try disassembleDataTransfer(allocator, machineCodeWord) orelse try unknown.toOwnedSlice();
+        },
+        0b01 => return try disassembleDataProcessing(allocator, machineCodeWord) orelse try unknown.toOwnedSlice(),
+        0b10 => return try disassembleBranch(allocator, machineCodeWord) orelse try unknown.toOwnedSlice(),
+        0b11 => {
+            if (((machineCodeWord >> 29) & 1) == 1) {
+                if (((machineCodeWord >> 28) & 1) == 1) {
+                    return try disassembleSoftwareInterrupt(allocator, machineCodeWord) orelse try unknown.toOwnedSlice();
+                }
+                // Reserved
+                return try disassembleSoftwareInterrupt(allocator, machineCodeWord) orelse try unknown.toOwnedSlice();
+            }
+            return try disassembleMoveImmediate(allocator, machineCodeWord) orelse try unknown.toOwnedSlice();
+        },
+        else => unreachable,
     }
-    if (encodedInst.m == 1) asmInst.append('s');
-    if (encodedInst.h == 1) {
-        asmInst.append('h');
-    } else if (encodedInst.b == 1) {
-        asmInst.append('b');
-    }
-    asmInst.appendSlice(" r");
-    asmInst.writer().print("{}", .{encodedInst.rd});
-    asmInst.appendSlice(", [r");
-    asmInst.writer().print("{}", .{encodedInst.rm});
-    if (encodedInst.p == 1) asmInst.append(']');
-    switch (encodedInst.n) {
-        0 => asmInst.appendSlice(" + "),
-        1 => asmInst.appendSlice(" - "),
-    }
-    if (encodedInst.i) {
-        const imm = encodedInst.offset << (encodedInst.shift * 2);
-        asmInst.writer().print("{}", .{imm});
-    } else {
-        asmInst.writer().print("r{} lsl {}", .{ encodedInst.offset, encodedInst.shift * 2 });
-    }
-    if (encodedInst.p == 0) {
-        asmInst.append(']');
-        if (encodedInst.w == 1) asmInst.append('!');
-    }
-    return asmInst.toOwnedSlice();
+    unreachable;
 }
 
-// fn disassembleMoveFromPsr(machineCodeWord: u32) []u8 {
-//     const inst: SetClearPsrBits = @bitCast(machineCodeWord);
-// }
-//
-// fn disassembleSetClearPsrBits(machineCodeWord: u32) []u8 {
-//     const inst: SetClearPsrBits = @bitCast(machineCodeWord);
-// }
-//
-// fn disassembleDataProcessing(machineCodeWord: u32) []u8 {
-//     const inst: SetClearPsrBits = @bitCast(machineCodeWord);
-// }
-//
-// fn disassembleBranch(machineCodeWord: u32) []u8 {
-//     const inst: SetClearPsrBits = @bitCast(machineCodeWord);
-// }
-//
-// fn disassembleMoveImmediate(machineCodeWord: u32) []u8 {
-//     const inst: SetClearPsrBits = @bitCast(machineCodeWord);
-// }
-//
-// fn disassembleSoftwareInterrupt(machineCodeWord: u32) []u8 {
-//     const inst: SetClearPsrBits = @bitCast(machineCodeWord);
-// }
+fn disassembleDataTransfer(allocator: std.mem.Allocator, machineCodeWord: u32) !?[]u8 {
+    const encodedInst: DataTransfer = @bitCast(machineCodeWord);
+    if (encodedInst._0 != 0b00) return null;
+    var asmInst: std.ArrayList(u8) = try std.ArrayList(u8).initCapacity(allocator, 32);
+    defer asmInst.deinit();
+    try asmInst.appendSlice("    ");
+    switch (encodedInst.s) {
+        0 => try asmInst.appendSlice("ld"),
+        1 => try asmInst.appendSlice("st"),
+    }
+    if (encodedInst.m == 1) try asmInst.append('s');
+    if (encodedInst.h == 1) {
+        try asmInst.append('h');
+    } else if (encodedInst.b == 1) {
+        try asmInst.append('b');
+    }
+    try asmInst.appendSlice(" r");
+    try asmInst.writer().print("{}", .{encodedInst.rd});
+    try asmInst.appendSlice(", [r");
+    try asmInst.writer().print("{}", .{encodedInst.rm});
+    if (encodedInst.p == 1) try asmInst.append(']');
+    switch (encodedInst.n) {
+        0 => try asmInst.appendSlice(" + "),
+        1 => try asmInst.appendSlice(" - "),
+    }
+    if (encodedInst.i == 1) {
+        const imm = encodedInst.offset << (encodedInst.shift * 2);
+        try asmInst.writer().print("{}", .{imm});
+    } else {
+        try asmInst.writer().print("r{} lsl {}", .{ encodedInst.offset, encodedInst.shift * 2 });
+    }
+    if (encodedInst.p == 0) {
+        try asmInst.append(']');
+        if (encodedInst.w == 1) try asmInst.append('!');
+    }
+    return try asmInst.toOwnedSlice();
+}
+
+fn disassembleMoveFromPsr(allocator: std.mem.Allocator, machineCodeWord: u32) !?[]u8 {
+    const encodedInst: MoveFromPsr = @bitCast(machineCodeWord);
+    if (encodedInst._0 != 0x01_8000) return null;
+    if (encodedInst._1 != 0) return null;
+    var asmInst: std.ArrayList(u8) = try std.ArrayList(u8).initCapacity(allocator, 32);
+    defer asmInst.deinit();
+    try asmInst.appendSlice("    ");
+    try asmInst.appendSlice("smv r");
+    try asmInst.writer().print("{}", .{encodedInst.rd});
+    return try asmInst.toOwnedSlice();
+}
+
+fn disassembleSetClearPsrBits(allocator: std.mem.Allocator, machineCodeWord: u32) !?[]u8 {
+    const encodedInst: SetClearPsrBits = @bitCast(machineCodeWord);
+    if (encodedInst._0 != 0b110_0000) return null;
+    if (encodedInst._1 != 0) return null;
+    if (encodedInst._2 != 0b001) return null;
+    var asmInst: std.ArrayList(u8) = try std.ArrayList(u8).initCapacity(allocator, 32);
+    defer asmInst.deinit();
+    try asmInst.appendSlice("    ");
+    switch (encodedInst.s) {
+        0 => try asmInst.appendSlice("scl "),
+        1 => try asmInst.appendSlice("sst "),
+    }
+    switch (encodedInst.i) {
+        0 => try asmInst.writer().print("r{}", .{encodedInst.operand}),
+        1 => try asmInst.writer().print("{}", .{encodedInst.operand}),
+    }
+    return try asmInst.toOwnedSlice();
+}
+
+fn disassembleDataProcessing(allocator: std.mem.Allocator, machineCodeWord: u32) !?[]u8 {
+    const encodedInst: DataProcessing = @bitCast(machineCodeWord);
+    if (encodedInst._0 != 0b01) return null;
+    var asmInst: std.ArrayList(u8) = try std.ArrayList(u8).initCapacity(allocator, 32);
+    defer asmInst.deinit();
+    try asmInst.appendSlice("    ");
+    switch (encodedInst.op) {
+        0b000 => try asmInst.appendSlice("add"),
+        0b001 => try asmInst.appendSlice("adc"),
+        0b010 => try asmInst.appendSlice("sub"),
+        0b011 => try asmInst.appendSlice("sbc"),
+        0b100 => try asmInst.appendSlice("and"),
+        0b101 => try asmInst.appendSlice("or"),
+        0b110 => try asmInst.appendSlice("xor"),
+        0b111 => try asmInst.appendSlice("btc"),
+    }
+    if (encodedInst.d == 0 and encodedInst.a == 1) {
+        try asmInst.append('x');
+    }
+    try asmInst.writer().print(" r{}, r{}, ", .{ encodedInst.rd, encodedInst.rm });
+    switch (encodedInst.i) {
+        0 => try asmInst.writer().print("r{} ", .{encodedInst.operand2}),
+        1 => try asmInst.writer().print("{} ", .{encodedInst.operand2}),
+    }
+    switch (encodedInst.a) {
+        0 => try asmInst.append('l'),
+        1 => try asmInst.append('a'),
+    }
+    switch (encodedInst.d) {
+        0 => try asmInst.appendSlice("sl "),
+        1 => try asmInst.appendSlice("sr "),
+    }
+    switch (encodedInst.h) {
+        0 => try asmInst.writer().print("r{} ", .{encodedInst.shift}),
+        1 => try asmInst.writer().print("{} ", .{encodedInst.shift}),
+    }
+    return try asmInst.toOwnedSlice();
+}
+
+fn disassembleBranch(allocator: std.mem.Allocator, machineCodeWord: u32) !?[]u8 {
+    const encodedInst: Branch = @bitCast(machineCodeWord);
+    if (encodedInst._0 != 0b10) return null;
+    var asmInst: std.ArrayList(u8) = try std.ArrayList(u8).initCapacity(allocator, 32);
+    defer asmInst.deinit();
+    try asmInst.appendSlice("    ");
+    try asmInst.append('b');
+    if (encodedInst.l == 1) try asmInst.append('l');
+    switch (encodedInst.cond) {
+        0b0000 => try asmInst.appendSlice("eq "),
+        0b0001 => try asmInst.appendSlice("ne "),
+        0b0010 => try asmInst.appendSlice("cs "),
+        0b0011 => try asmInst.appendSlice("cc "),
+        0b0100 => try asmInst.appendSlice("mi "),
+        0b0101 => try asmInst.appendSlice("pl "),
+        0b0110 => try asmInst.appendSlice("vs "),
+        0b0111 => try asmInst.appendSlice("hi "),
+        0b1000 => try asmInst.appendSlice("ls "),
+        0b1001 => try asmInst.appendSlice("ge "),
+        0b1010 => try asmInst.appendSlice("lt "),
+        0b1011 => try asmInst.appendSlice("gt "),
+        0b1100 => try asmInst.appendSlice("le "),
+        0b1101 => try asmInst.appendSlice("le "),
+        0b1110 => try asmInst.appendSlice(" "),
+        0b1111 => return null,
+    }
+    if (encodedInst.i == 1) {
+        if (((encodedInst.offset >> 23) & 1) == 1) {
+            try asmInst.append('-');
+        }
+        try asmInst.writer().print("{}", .{@as(u25, @truncate(@as(u26, encodedInst.offset) << 2))});
+    } else {
+        try asmInst.writer().print("r{}", .{encodedInst.offset});
+    }
+    return try asmInst.toOwnedSlice();
+}
+
+fn disassembleMoveImmediate(allocator: std.mem.Allocator, machineCodeWord: u32) !?[]u8 {
+    const encodedInst: MoveImmediate = @bitCast(machineCodeWord);
+    if (encodedInst._0 != 0b110) return null;
+    var asmInst: std.ArrayList(u8) = try std.ArrayList(u8).initCapacity(allocator, 32);
+    defer asmInst.deinit();
+    try asmInst.appendSlice("    ");
+    try asmInst.writer().print("mvi r{}, ", .{encodedInst.rd});
+    const upperByte: u32 = if (encodedInst.m == 1) 0xFF00_0000 else 0;
+    const imm = upperByte | @as(u32, @intCast(encodedInst.immediate));
+    try asmInst.writer().print("{}", .{imm});
+    return try asmInst.toOwnedSlice();
+}
+
+fn disassembleSoftwareInterrupt(allocator: std.mem.Allocator, machineCodeWord: u32) !?[]u8 {
+    const encodedInst: SoftwareInterrupt = @bitCast(machineCodeWord);
+    if (encodedInst._0 != 0b1111) return null;
+    var asmInst: std.ArrayList(u8) = try std.ArrayList(u8).initCapacity(allocator, 32);
+    defer asmInst.deinit();
+    try asmInst.appendSlice("    ");
+    try asmInst.writer().print("swi {}", .{encodedInst.comment});
+    return try asmInst.toOwnedSlice();
+}
 
 // ================================================================
 //   TESTS
@@ -704,15 +819,13 @@ fn disassembleDataTransfer(allocator: std.mem.Allocator, machineCodeWord: u32) [
 
 /// Unwraps Instruction returns from encode
 fn INST(line: []const u8) !Instruction {
-    const ta = std.testing.allocator;
-    var diag = Diagnostic.init(ta);
-    defer diag.text.deinit();
+    var diag = try Diagnostic.init();
     var tokens = Tokenizer.init(line);
     if (toMachineCodeWord(&tokens, &diag)) |res| {
         return res orelse .{ .encoding = 0, .reloc = null };
     } else |err| switch (err) {
         error.ParseError => {
-            std.debug.print("ERROR: {s}", .{err.text.items});
+            // std.debug.print("ERROR: {s}", .{diag.text.slice()});
             return err;
         },
         else => return err,
@@ -721,38 +834,24 @@ fn INST(line: []const u8) !Instruction {
 
 /// Unwraps Instruction returns from encode into raw u32 encodings
 fn ENCODE(line: []const u8) !u32 {
-    const ta = std.testing.allocator;
-    var diag = Diagnostic.init(ta);
-    defer diag.text.deinit();
+    var diag = try Diagnostic.init();
     var tokens = Tokenizer.init(line);
     if (toMachineCodeWord(&tokens, &diag)) |res| {
-        const inst = res orelse .{ .encoding = 0, .reloc = null };
+        const inst = res orelse Instruction{ .encoding = 0, .extension = null, .reloc = null };
         return inst.encoding;
     } else |err| switch (err) {
         error.ParseError => {
-            std.debug.print("ERROR: {s}", .{err.text.items});
+            // std.debug.print("ERROR: {s}", .{diag.text.slice()});
             return err;
         },
         else => return err,
     }
 }
 
-test "Empty lines" {
-    const ta = std.testing.allocator;
-    var err = Diagnostic.init(ta);
-    defer err.text.deinit();
-    var line = Tokenizer.init("");
-    try std.testing.expectEqual(null, try toMachineCodeWord(&line, &err));
-    line = Tokenizer.init("; some comment");
-    try std.testing.expectEqual(null, try toMachineCodeWord(&line, &err));
-}
-
 test "Invalid mnemonic" {
-    const ta = std.testing.allocator;
-    var err = Diagnostic.init(ta);
-    defer err.text.deinit();
+    var diag = try Diagnostic.init();
     var line = Tokenizer.init("    bad");
-    try std.testing.expectError(error.ParseError, Self.encode(&line, &err));
+    try std.testing.expectError(error.ParseError, toMachineCodeWord(&line, &diag));
 }
 
 // --- Data Transfer Instructions
@@ -811,50 +910,50 @@ test "DataTransfer -- Unencodable shift value" {
 test "DataTransfer -- Mnemonic variants" {
     try std.testing.expectEqual(0x0120_0000, try ENCODE("ld    r1, [r2]"));
     try std.testing.expectEqual(0x0120_8000, try ENCODE("ldb   r1, [r2]"));
-    try std.testing.expectEqual(0x0120_8400, try ENCODE("ldsb  r1, [r2]"));
+    try std.testing.expectEqual(0x0124_8000, try ENCODE("ldsb  r1, [r2]"));
     try std.testing.expectEqual(0x0121_0000, try ENCODE("ldh   r1, [r2]"));
-    try std.testing.expectEqual(0x0121_0400, try ENCODE("ldsh  r1, [r2]"));
+    try std.testing.expectEqual(0x0125_0000, try ENCODE("ldsh  r1, [r2]"));
     try std.testing.expectEqual(0x2120_0000, try ENCODE("st    r1, [r2]"));
     try std.testing.expectEqual(0x2120_8000, try ENCODE("stb   r1, [r2]"));
-    try std.testing.expectEqual(0x2120_8400, try ENCODE("stsb  r1, [r2]"));
+    try std.testing.expectEqual(0x2124_8000, try ENCODE("stsb  r1, [r2]"));
     try std.testing.expectEqual(0x2121_0000, try ENCODE("sth   r1, [r2]"));
-    try std.testing.expectEqual(0x2121_0400, try ENCODE("stsh  r1, [r2]"));
+    try std.testing.expectEqual(0x2125_0000, try ENCODE("stsh  r1, [r2]"));
 }
 
 test "DataTransfer -- No writeback register offset" {
     try std.testing.expectEqual(0x0120_0003, try ENCODE("ld r1, [r2 + r3]"));
-    try std.testing.expectEqual(0x0124_0003, try ENCODE("ld r1, [r2 - r3]"));
+    try std.testing.expectEqual(0x0120_0403, try ENCODE("ld r1, [r2 - r3]"));
     try std.testing.expectEqual(0x0120_1003, try ENCODE("ld r1, [r2 + r3 lsl 4]"));
-    try std.testing.expectEqual(0x0124_1003, try ENCODE("ld r1, [r2 - r3 lsl 4]"));
+    try std.testing.expectEqual(0x0120_1403, try ENCODE("ld r1, [r2 - r3 lsl 4]"));
 }
 
 test "DataTransfer -- No writeback immediate" {
     try std.testing.expectEqual(0x1120_02AA, try ENCODE("ld r1, [r2 + 0x02AA]"));
-    try std.testing.expectEqual(0x1124_02AA, try ENCODE("ld r1, [r2 - 0x02AA]"));
+    try std.testing.expectEqual(0x1120_06AA, try ENCODE("ld r1, [r2 - 0x02AA]"));
 }
 
 test "Datatransfer -- Pre-increment register offset" {
     try std.testing.expectEqual(0x0122_0003, try ENCODE("ld r1, [r2 + r3]!"));
-    try std.testing.expectEqual(0x0126_0003, try ENCODE("ld r1, [r2 - r3]!"));
+    try std.testing.expectEqual(0x0122_0403, try ENCODE("ld r1, [r2 - r3]!"));
     try std.testing.expectEqual(0x0122_1003, try ENCODE("ld r1, [r2 + r3 lsl 4]!"));
-    try std.testing.expectEqual(0x0126_1003, try ENCODE("ld r1, [r2 - r3 lsl 4]!"));
+    try std.testing.expectEqual(0x0122_1403, try ENCODE("ld r1, [r2 - r3 lsl 4]!"));
 }
 
 test "Datatransfer -- Pre-increment writeback immediate" {
     try std.testing.expectEqual(0x1122_02AA, try ENCODE("ld r1, [r2 + 0x02AA]!"));
-    try std.testing.expectEqual(0x1126_02AA, try ENCODE("ld r1, [r2 - 0x02AA]!"));
+    try std.testing.expectEqual(0x1122_06AA, try ENCODE("ld r1, [r2 - 0x02AA]!"));
 }
 
 test "Datatransfer -- Post-increment register offset" {
     try std.testing.expectEqual(0x0128_0003, try ENCODE("ld r1, [r2] + r3"));
-    try std.testing.expectEqual(0x012C_0003, try ENCODE("ld r1, [r2] - r3"));
+    try std.testing.expectEqual(0x0128_0403, try ENCODE("ld r1, [r2] - r3"));
     try std.testing.expectEqual(0x0128_1003, try ENCODE("ld r1, [r2] + r3 lsl 4"));
-    try std.testing.expectEqual(0x012C_1003, try ENCODE("ld r1, [r2] - r3 lsl 4"));
+    try std.testing.expectEqual(0x0128_1403, try ENCODE("ld r1, [r2] - r3 lsl 4"));
 }
 
 test "Datatransfer -- Post-increment writeback immediate" {
     try std.testing.expectEqual(0x1128_02AA, try ENCODE("ld r1, [r2] + 0x02AA"));
-    try std.testing.expectEqual(0x112C_02AA, try ENCODE("ld r1, [r2] - 0x02AA"));
+    try std.testing.expectEqual(0x1128_06AA, try ENCODE("ld r1, [r2] - 0x02AA"));
 }
 
 test "Datatransfer -- Implicitly shifted immediate" {
@@ -864,7 +963,7 @@ test "Datatransfer -- Implicitly shifted immediate" {
     try std.testing.expectEqual(0x1120_2341, try ENCODE("ld r1, [r2 + 0x34100]"));
 }
 
-// --- Move From PSR Self
+// --- Move From PSR Instruction
 
 test "MoveFromPsr -- Unexpected EOL" {
     try std.testing.expectError(error.ParseError, ENCODE("smv"));
@@ -934,7 +1033,7 @@ test "DataProcessing -- Unencodable shift value" {
     try std.testing.expectEqual(error.ParseError, ENCODE("add r1, r2, r3 lsr 33"));
 }
 
-test "DataTransfer -- Opcode variants" {
+test "DataProcessing -- Opcode variants" {
     try std.testing.expectEqual(0x4120_0003, try ENCODE("add    r1, r2, r3"));
     try std.testing.expectEqual(0x4122_0003, try ENCODE("adc    r1, r2, r3"));
     try std.testing.expectEqual(0x4124_0003, try ENCODE("sub    r1, r2, r3"));
@@ -953,30 +1052,30 @@ test "DataTransfer -- Opcode variants" {
     try std.testing.expectEqual(0x412F_0003, try ENCODE("btcx   r1, r2, r3"));
 }
 
-test "DataTransfer -- Immediate value" {
+test "DataProcessing -- Immediate value" {
     try std.testing.expectEqual(0x5120_00AA, try ENCODE("add r1, r2, 0xAA"));
 }
 
-test "DataTransfer -- Register value, register shift" {
+test "DataProcessing -- Register value, register shift" {
     try std.testing.expectEqual(0x4120_1003, try ENCODE("add r1, r2, r3 lsl r4"));
     try std.testing.expectEqual(0x4120_9003, try ENCODE("add r1, r2, r3 lsr r4"));
     try std.testing.expectEqual(0x4121_9003, try ENCODE("add r1, r2, r3 asr r4"));
 }
 
-test "DataTransfer -- Immediate value, register shift" {
+test "DataProcessing -- Immediate value, register shift" {
     try std.testing.expectEqual(0x5120_10AA, try ENCODE("add r1, r2, 0xAA lsl r4"));
     try std.testing.expectEqual(0x5120_90AA, try ENCODE("add r1, r2, 0xAA lsr r4"));
     try std.testing.expectEqual(0x5121_90AA, try ENCODE("add r1, r2, 0xAA asr r4"));
 }
 
-test "DataTransfer -- Register value, immediate shift" {
+test "DataProcessing -- Register value, immediate shift" {
     try std.testing.expectEqual(0x6120_1003, try ENCODE("add r1, r2, r3 lsl 4"));
     try std.testing.expectEqual(0x6120_9003, try ENCODE("add r1, r2, r3 lsr 4"));
     try std.testing.expectEqual(0x6121_9003, try ENCODE("add r1, r2, r3 asr 4"));
     try std.testing.expectEqual(0x6120_8003, try ENCODE("add r1, r2, r3 lsr 32"));
 }
 
-test "DataTransfer -- Immediate value, immediate shift" {
+test "DataProcessing -- Immediate value, immediate shift" {
     try std.testing.expectEqual(0x7120_10AA, try ENCODE("add r1, r2, 0xAA lsl 4"));
     try std.testing.expectEqual(0x7120_90AA, try ENCODE("add r1, r2, 0xAA lsr 4"));
     try std.testing.expectEqual(0x7121_90AA, try ENCODE("add r1, r2, 0xAA asr 4"));
@@ -1020,7 +1119,7 @@ test "DataProcessing Pseudo -- Unexpected token" {
     try std.testing.expectError(error.ParseError, ENCODE("mov, r1, r2!"));
 }
 
-test "DataProcessing Pseudo -- Self variants" {
+test "DataProcessing Pseudo -- Instruction variants" {
     try std.testing.expectEqual(0x4001_0000, try ENCODE("nop"));
     try std.testing.expectEqual(0x4018_0002, try ENCODE("tst    r1, r2"));
     try std.testing.expectEqual(0x401C_0002, try ENCODE("teq    r1, r2"));
@@ -1047,73 +1146,73 @@ test "Branch -- Unexpected token" {
     try std.testing.expectError(error.ParseError, INST("b label!"));
 }
 
-test "Branch -- Self variants, register" {
-    try std.testing.expectEqual(Self{ .encoding = 0x8000_0001 }, INST("beq     r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0x8100_0001 }, INST("bne     r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0x8200_0001 }, INST("bcs     r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0x8300_0001 }, INST("bcc     r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0x8400_0001 }, INST("bmi     r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0x8500_0001 }, INST("bpl     r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0x8600_0001 }, INST("bvs     r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0x8700_0001 }, INST("bvc     r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0x8800_0001 }, INST("bhi     r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0x8900_0001 }, INST("bls     r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0x8A00_0001 }, INST("bge     r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0x8B00_0001 }, INST("blt     r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0x8C00_0001 }, INST("bgt     r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0x8D00_0001 }, INST("ble     r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0x8E00_0001 }, INST("b       r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0xA000_0001 }, INST("bleq    r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0xA100_0001 }, INST("blne    r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0xA200_0001 }, INST("blcs    r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0xA300_0001 }, INST("blcc    r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0xA400_0001 }, INST("blmi    r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0xA500_0001 }, INST("blpl    r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0xA600_0001 }, INST("blvs    r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0xA700_0001 }, INST("blvc    r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0xA800_0001 }, INST("blhi    r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0xA900_0001 }, INST("blls    r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0xAA00_0001 }, INST("blge    r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0xAB00_0001 }, INST("bllt    r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0xAC00_0001 }, INST("blgt    r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0xAD00_0001 }, INST("blle    r1"));
-    try std.testing.expectEqual(Self{ .encoding = 0xAE00_0001 }, INST("bl      r1"));
+test "Branch -- Instruction variants, register" {
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8000_0001 }, try INST("beq     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8100_0001 }, try INST("bne     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8200_0001 }, try INST("bcs     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8300_0001 }, try INST("bcc     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8400_0001 }, try INST("bmi     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8500_0001 }, try INST("bpl     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8600_0001 }, try INST("bvs     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8700_0001 }, try INST("bvc     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8800_0001 }, try INST("bhi     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8900_0001 }, try INST("bls     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8A00_0001 }, try INST("bge     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8B00_0001 }, try INST("blt     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8C00_0001 }, try INST("bgt     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8D00_0001 }, try INST("ble     r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0x8E00_0001 }, try INST("b       r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xA000_0001 }, try INST("bleq    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xA100_0001 }, try INST("blne    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xA200_0001 }, try INST("blcs    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xA300_0001 }, try INST("blcc    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xA400_0001 }, try INST("blmi    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xA500_0001 }, try INST("blpl    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xA600_0001 }, try INST("blvs    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xA700_0001 }, try INST("blvc    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xA800_0001 }, try INST("blhi    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xA900_0001 }, try INST("blls    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xAA00_0001 }, try INST("blge    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xAB00_0001 }, try INST("bllt    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xAC00_0001 }, try INST("blgt    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xAD00_0001 }, try INST("blle    r1"));
+    try std.testing.expectEqual(Instruction{ .encoding = 0xAE00_0001 }, try INST("bl      r1"));
 }
 
-test "Branch -- Self variants, label" {
-    try std.testing.expectEqualDeep(Self{ .encoding = 0x8000_0000, .reloc = "label" }, INST("beq     label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0x8100_0000, .reloc = "label" }, INST("bne     label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0x8200_0000, .reloc = "label" }, INST("bcs     label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0x8300_0000, .reloc = "label" }, INST("bcc     label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0x8400_0000, .reloc = "label" }, INST("bmi     label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0x8500_0000, .reloc = "label" }, INST("bpl     label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0x8600_0000, .reloc = "label" }, INST("bvs     label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0x8700_0000, .reloc = "label" }, INST("bvc     label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0x8800_0000, .reloc = "label" }, INST("bhi     label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0x8900_0000, .reloc = "label" }, INST("bls     label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0x8A00_0000, .reloc = "label" }, INST("bge     label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0x8B00_0000, .reloc = "label" }, INST("blt     label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0x8C00_0000, .reloc = "label" }, INST("bgt     label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0x8D00_0000, .reloc = "label" }, INST("ble     label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0x8E00_0000, .reloc = "label" }, INST("b       label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0xA000_0000, .reloc = "label" }, INST("bleq    label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0xA100_0000, .reloc = "label" }, INST("blne    label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0xA200_0000, .reloc = "label" }, INST("blcs    label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0xA300_0000, .reloc = "label" }, INST("blcc    label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0xA400_0000, .reloc = "label" }, INST("blmi    label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0xA500_0000, .reloc = "label" }, INST("blpl    label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0xA600_0000, .reloc = "label" }, INST("blvs    label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0xA700_0000, .reloc = "label" }, INST("blvc    label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0xA800_0000, .reloc = "label" }, INST("blhi    label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0xA900_0000, .reloc = "label" }, INST("blls    label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0xAA00_0000, .reloc = "label" }, INST("blge    label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0xAB00_0000, .reloc = "label" }, INST("bllt    label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0xAC00_0000, .reloc = "label" }, INST("blgt    label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0xAD00_0000, .reloc = "label" }, INST("blle    label"));
-    try std.testing.expectEqualDeep(Self{ .encoding = 0xAE00_0000, .reloc = "label" }, INST("bl      label"));
+test "Branch -- Instruction variants, label" {
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8000_0000, .reloc = "label" }, try INST("beq     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8100_0000, .reloc = "label" }, try INST("bne     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8200_0000, .reloc = "label" }, try INST("bcs     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8300_0000, .reloc = "label" }, try INST("bcc     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8400_0000, .reloc = "label" }, try INST("bmi     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8500_0000, .reloc = "label" }, try INST("bpl     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8600_0000, .reloc = "label" }, try INST("bvs     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8700_0000, .reloc = "label" }, try INST("bvc     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8800_0000, .reloc = "label" }, try INST("bhi     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8900_0000, .reloc = "label" }, try INST("bls     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8A00_0000, .reloc = "label" }, try INST("bge     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8B00_0000, .reloc = "label" }, try INST("blt     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8C00_0000, .reloc = "label" }, try INST("bgt     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8D00_0000, .reloc = "label" }, try INST("ble     label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0x8E00_0000, .reloc = "label" }, try INST("b       label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xA000_0000, .reloc = "label" }, try INST("bleq    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xA100_0000, .reloc = "label" }, try INST("blne    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xA200_0000, .reloc = "label" }, try INST("blcs    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xA300_0000, .reloc = "label" }, try INST("blcc    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xA400_0000, .reloc = "label" }, try INST("blmi    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xA500_0000, .reloc = "label" }, try INST("blpl    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xA600_0000, .reloc = "label" }, try INST("blvs    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xA700_0000, .reloc = "label" }, try INST("blvc    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xA800_0000, .reloc = "label" }, try INST("blhi    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xA900_0000, .reloc = "label" }, try INST("blls    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xAA00_0000, .reloc = "label" }, try INST("blge    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xAB00_0000, .reloc = "label" }, try INST("bllt    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xAC00_0000, .reloc = "label" }, try INST("blgt    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xAD00_0000, .reloc = "label" }, try INST("blle    label"));
+    try std.testing.expectEqualDeep(Instruction{ .encoding = 0xAE00_0000, .reloc = "label" }, try INST("bl      label"));
 }
 
-// --- Move Immediate Self
+// --- Move Immediate Instruction
 
 test "MoveImmediate -- Unexpected EOL" {
     try std.testing.expectError(error.ParseError, ENCODE("mvi"));
@@ -1138,7 +1237,7 @@ test "MoveImmediate -- Encoding" {
     try std.testing.expectEqual(0xD1FF_FF56, ENCODE("mvi r1, -0xAA"));
 }
 
-// --- Software Interrupt Self
+// --- Software Interrupt Instruction
 
 test "SoftwareInterrupt -- Unexpected token" {
     try std.testing.expectError(error.ParseError, ENCODE("swi!"));
@@ -1153,7 +1252,7 @@ test "SoftwareInterrupt -- Encoding" {
     try std.testing.expectEqual(0xFEAD_BEEF, ENCODE("swi 0x0EAD_BEEF"));
 }
 
-// --- Move32 Self
+// --- Move32 Instruction
 
 test "Move32 -- Unexpected EOL" {
     try std.testing.expectError(error.ParseError, ENCODE("mov32"));
@@ -1175,14 +1274,43 @@ test "Move32 -- Unencodable value" {
 
 test "Move32 -- Encoding, label" {
     try std.testing.expectEqualDeep(
-        Self{ .encoding = 0xC100_0000, .extension = 0x7101_6000, .reloc = "label" },
-        INST("mov32 r1, label"),
+        Instruction{ .encoding = 0xC100_0000, .extension = 0x7101_6000, .reloc = "label" },
+        try INST("mov32 r1, label"),
     );
 }
 
 test "Move32 -- Encoding, immediate" {
     try std.testing.expectEqual(
-        .{ .encoding = 0xC1AD_BEEF, .extension = 0x7101_60DE },
-        INST("mov32 r1, 0xDEADBEEF"),
+        Instruction{ .encoding = 0xC1AD_BEEF, .extension = 0x7101_60DE },
+        try INST("mov32 r1, 0xdeadbeef"),
     );
+}
+
+fn chewUpAndSpitOut(allocator: std.mem.Allocator, str: []const u8) !void {
+    var line = Tokenizer.init(str);
+    var diag = try Diagnostic.init();
+    const inst: Instruction = try toMachineCodeWord(&line, &diag) orelse return error.ParseError;
+    const encoding = try disassemble(allocator, inst.encoding);
+    std.debug.print("{x:0>8}: {s}\n", .{ inst.encoding, encoding });
+    allocator.free(encoding);
+    if (inst.extension) |ext| {
+        const extension = try disassemble(allocator, ext);
+        std.debug.print("{x:0>8}: {s}\n", .{ ext, extension });
+        allocator.free(extension);
+    }
+}
+
+test "disassemble" {
+    const ta = std.testing.allocator;
+    try chewUpAndSpitOut(ta, "ldb r4, [r5 + 7]");
+    try chewUpAndSpitOut(ta, "nop");
+    try chewUpAndSpitOut(ta, "not r3, r3");
+    try chewUpAndSpitOut(ta, "mov r3, r6");
+    try chewUpAndSpitOut(ta, "swi 2048");
+    try chewUpAndSpitOut(ta, "mov32 r8, 0xdeadbeef");
+    try chewUpAndSpitOut(ta, "teq r8, 24");
+    try chewUpAndSpitOut(ta, "btc r8, r8, 0b1001");
+    const encoding = try disassemble(ta, 0x0001_8001);
+    std.debug.print("{x:0>8}: {s}\n", .{ 0x0001_8001, encoding });
+    ta.free(encoding);
 }

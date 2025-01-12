@@ -23,13 +23,13 @@ pub const stringMap = std.StaticStringMap(Directive).initComptime(.{
     .{ "data", .data },
     .{ "text", .text },
     .{ "bss", .bss },
-    .{ "extern", .@"extern" },
-    .{ "export", .@"export" },
-    .{ "align", .@"align" },
     .{ "word", .word },
     .{ "half", .half },
     .{ "byte", .byte },
     .{ "string", .string },
+    .{ "extern", .@"extern" },
+    .{ "export", .@"export" },
+    .{ "align", .@"align" },
 });
 
 pub fn parseBssDeclaration(line: *Tokenizer, diag: *Diagnostic) !struct { label: []const u8, size: u32 } {
@@ -143,6 +143,7 @@ pub fn parseStaticData(
     }
 
     var array = try std.ArrayList(u8).initCapacity(allocator, baseArrayCap);
+    defer array.deinit();
 
     while (line.next()) |token| {
         const negated = if (parsing.optionalOperator("-", line) == '-') true else false;
@@ -186,7 +187,7 @@ test "parseBssDeclaration" {
     var diag = try Diagnostic.init();
     var line = Tokenizer.init("label 1024");
     const res = try parseBssDeclaration(&line, &diag);
-    try std.testing.expectEqualDeep("label", res.label);
+    try std.testing.expectEqualSlices(u8, "label", res.label);
     try std.testing.expectEqual(1024, res.size);
 }
 
@@ -209,7 +210,7 @@ test "parseStaticData -- .word" {
     var line = Tokenizer.init("0x33221100, 0x77665544");
     const array = try parseStaticData(u32, ta, 0, &line, &diag);
     defer ta.free(array);
-    try std.testing.expectEqualDeep(([8]u8{ 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77 })[0..], array);
+    try std.testing.expectEqualSlices(u8, ([8]u8{ 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77 })[0..], array);
 }
 
 test "parseStaticData -- .word with implicit array length" {
@@ -219,7 +220,7 @@ test "parseStaticData -- .word with implicit array length" {
     const array = try parseStaticData(u32, ta, 0, &line, &diag);
     std.debug.print("{s}\n", .{diag.text.slice()});
     defer ta.free(array);
-    try std.testing.expectEqualDeep(([12]u8{ 0x08, 0x00, 0x00, 0x00, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77 })[0..], array);
+    try std.testing.expectEqualSlices(u8, ([12]u8{ 0x08, 0x00, 0x00, 0x00, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77 })[0..], array);
 }
 
 test "parseStaticData -- .byte" {
@@ -228,7 +229,7 @@ test "parseStaticData -- .byte" {
     var line = Tokenizer.init("0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77");
     const array = try parseStaticData(u8, ta, 0, &line, &diag);
     defer ta.free(array);
-    try std.testing.expectEqualDeep(([8]u8{ 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77 })[0..], array);
+    try std.testing.expectEqualSlices(u8, ([8]u8{ 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77 })[0..], array);
 }
 
 test "parseStaticData -- .byte with implicit array length" {
@@ -238,5 +239,14 @@ test "parseStaticData -- .byte with implicit array length" {
     const array = try parseStaticData(u8, ta, 0, &line, &diag);
     std.debug.print("{s}\n", .{diag.text.slice()});
     defer ta.free(array);
-    try std.testing.expectEqualDeep(([9]u8{ 0x08, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77 })[0..], array);
+    try std.testing.expectEqualSlices(u8, ([9]u8{ 0x08, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77 })[0..], array);
+}
+
+test "parseStaticData -- .string" {
+    const ta = std.testing.allocator;
+    var diag = try Diagnostic.init();
+    var line = Tokenizer.init("\"a string\"");
+    const array = try parsing.parseString(ta, &line, &diag);
+    defer ta.free(array);
+    try std.testing.expectEqualSlices(u8, "a string", array);
 }

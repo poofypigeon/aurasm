@@ -213,6 +213,30 @@ fn processDirective(self: *Self, line: *Tokenizer, diag: *Diagnostic) !void {
             const symbolIndex = try self.addSymbolFromDeclaration(res.label, diag);
             try self.bssTable.append(TableEntry{ .symbolIndex = symbolIndex, .offset = res.size });
         },
+        .word => _ = {
+            var section: *AsmSection = try self.fetchCurrentSection(diag);
+            const data = try directive.parseStaticData(u32, self.allocator, 0, line, diag);
+            try section.buffer.appendSlice(data);
+            self.allocator.free(data);
+        },
+        .half => {
+            var section: *AsmSection = try self.fetchCurrentSection(diag);
+            const data = try directive.parseStaticData(u16, self.allocator, 0, line, diag);
+            try section.buffer.appendSlice(data);
+            self.allocator.free(data);
+        },
+        .byte => {
+            var section: *AsmSection = try self.fetchCurrentSection(diag);
+            const data = try directive.parseStaticData(u8, self.allocator, 0, line, diag);
+            try section.buffer.appendSlice(data);
+            self.allocator.free(data);
+        },
+        .string => {
+            var section: *AsmSection = try self.fetchCurrentSection(diag);
+            const data = try parsing.parseString(self.allocator, line, diag);
+            try section.buffer.appendSlice(data);
+            self.allocator.free(data);
+        },
         .@"align" => {
             var section = try self.fetchCurrentSection(diag);
             const alignment = try directive.parseAlignDirective(line, diag);
@@ -228,22 +252,6 @@ fn processDirective(self: *Self, line: *Tokenizer, diag: *Diagnostic) !void {
             const symbol = try parsing.parseSymbol(line, diag);
             const symbolIndex = try self.addSymbolFromDeclaration(symbol, diag);
             try self.externalSymbols.append(symbolIndex);
-        },
-        .word => _ = {
-            var section: *AsmSection = try self.fetchCurrentSection(diag);
-            try section.buffer.appendSlice(try directive.parseStaticData(u32, self.allocator, 0, line, diag));
-        },
-        .half => {
-            var section: *AsmSection = try self.fetchCurrentSection(diag);
-            try section.buffer.appendSlice(try directive.parseStaticData(u16, self.allocator, 0, line, diag));
-        },
-        .byte => {
-            var section: *AsmSection = try self.fetchCurrentSection(diag);
-            try section.buffer.appendSlice(try directive.parseStaticData(u8, self.allocator, 0, line, diag));
-        },
-        .string => {
-            var section: *AsmSection = try self.fetchCurrentSection(diag);
-            try section.buffer.appendSlice(try parsing.parseString(self.allocator, line, diag));
         },
     } else {
         try diag.msg("expected directive\n", .{});
@@ -298,6 +306,9 @@ fn symbolIsDuplicate(self: Self, symbolIndex: u32) bool {
         for (section.labels.items) |label| {
             if (label.symbolIndex == symbolIndex) return true;
         }
+    }
+    for (self.externalSymbols.items) |index| {
+        if (index == symbolIndex) return true;
     }
     return false;
 }
@@ -396,4 +407,112 @@ test "processDirective -- .bss success" {
     try std.testing.expectEqual(2, file.symbolTable.items.len);
     try std.testing.expectEqual(1, file.bssTable.items[1].symbolIndex);
     try std.testing.expectEqual(2048, file.bssTable.items[1].offset);
+}
+
+test "processDirective -- .word not representable" {
+    const ta = std.testing.allocator;
+    var file: Self = try Self.init(ta);
+    defer file.deinit();
+    var diag = try Diagnostic.init();
+    var line = Tokenizer.init("data");
+    try file.processDirective(&line, &diag);
+    line = Tokenizer.init("word 0x133221100");
+    try std.testing.expectError(error.ParseError, file.processDirective(&line, &diag));
+}
+
+test "processDirective -- .word" {
+    const ta = std.testing.allocator;
+    var file: Self = try Self.init(ta);
+    defer file.deinit();
+    var diag = try Diagnostic.init();
+    var line = Tokenizer.init("data");
+    try file.processDirective(&line, &diag);
+    line = Tokenizer.init("word 0x33221100, 0x77665544");
+    try file.processDirective(&line, &diag);
+    try std.testing.expectEqualSlices(u8, ([8]u8{ 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77 })[0..], (try file.fetchCurrentSection(&diag)).buffer.items);
+}
+
+test "processDirective -- .half not representable" {
+    const ta = std.testing.allocator;
+    var file: Self = try Self.init(ta);
+    defer file.deinit();
+    var diag = try Diagnostic.init();
+    var line = Tokenizer.init("data");
+    try file.processDirective(&line, &diag);
+    line = Tokenizer.init("half 0x11100");
+    try std.testing.expectError(error.ParseError, file.processDirective(&line, &diag));
+}
+
+test "processDirective -- .half" {
+    const ta = std.testing.allocator;
+    var file: Self = try Self.init(ta);
+    defer file.deinit();
+    var diag = try Diagnostic.init();
+    var line = Tokenizer.init("data");
+    try file.processDirective(&line, &diag);
+    line = Tokenizer.init("half 0x1100, 0x3322");
+    try file.processDirective(&line, &diag);
+    try std.testing.expectEqualSlices(u8, ([4]u8{ 0x00, 0x11, 0x22, 0x33 })[0..], (try file.fetchCurrentSection(&diag)).buffer.items);
+}
+
+test "processDirective -- .byte not representable" {
+    const ta = std.testing.allocator;
+    var file: Self = try Self.init(ta);
+    defer file.deinit();
+    var diag = try Diagnostic.init();
+    var line = Tokenizer.init("data");
+    try file.processDirective(&line, &diag);
+    line = Tokenizer.init("byte 0x100");
+    try std.testing.expectError(error.ParseError, file.processDirective(&line, &diag));
+}
+
+test "processDirective -- .byte" {
+    const ta = std.testing.allocator;
+    var file: Self = try Self.init(ta);
+    defer file.deinit();
+    var diag = try Diagnostic.init();
+    var line = Tokenizer.init("data");
+    try file.processDirective(&line, &diag);
+    line = Tokenizer.init("byte 0x00, 0x11");
+    try file.processDirective(&line, &diag);
+    try std.testing.expectEqualSlices(u8, ([2]u8{ 0x00, 0x11 })[0..], (try file.fetchCurrentSection(&diag)).buffer.items);
+}
+
+test "processDirective -- .string with implicit array length" {
+    const ta = std.testing.allocator;
+    var file: Self = try Self.init(ta);
+    defer file.deinit();
+    var diag = try Diagnostic.init();
+    var line = Tokenizer.init("data");
+    try file.processDirective(&line, &diag);
+    line = Tokenizer.init("byte * .string \"abc\"");
+    try file.processDirective(&line, &diag);
+    try std.testing.expectEqualSlices(u8, ([4]u8{ 0x03, 'a', 'b', 'c' })[0..], (try file.fetchCurrentSection(&diag)).buffer.items);
+}
+
+test "processDirective -- .align with missing/extra tokens" {
+    const ta = std.testing.allocator;
+    var file: Self = try Self.init(ta);
+    defer file.deinit();
+    var diag = try Diagnostic.init();
+    var line = Tokenizer.init("data");
+    try file.processDirective(&line, &diag);
+    line = Tokenizer.init("align");
+    try std.testing.expectError(error.ParseError, file.processDirective(&line, &diag));
+    line = Tokenizer.init("align 4!");
+    try std.testing.expectError(error.ParseError, file.processDirective(&line, &diag));
+}
+
+test "processDirective -- .align" {
+    const ta = std.testing.allocator;
+    var file: Self = try Self.init(ta);
+    defer file.deinit();
+    var diag = try Diagnostic.init();
+    var line = Tokenizer.init("data");
+    try file.processDirective(&line, &diag);
+    line = Tokenizer.init("byte 0x00, 0x11");
+    try file.processDirective(&line, &diag);
+    line = Tokenizer.init("align 4");
+    try file.processDirective(&line, &diag);
+    try std.testing.expectEqual(4, (try file.fetchCurrentSection(&diag)).buffer.items.len);
 }
